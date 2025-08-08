@@ -15,51 +15,51 @@ def handle_pbx_request():
             'PBXextensionId': request.args.get('PBXextensionId'),
             'PBXextensionPath': request.args.get('PBXextensionPath')
         }
-        
+
         # הוספת כל הפרמטרים הנוספים שנאספו
         for key, value in request.args.items():
             if not key.startswith('PBX'):
                 call_params[key] = value
-        
+
         logger.info(f"קיבלנו פנייה: {call_params}")
-        
+
         call_id = call_params.get('PBXcallId')
         phone_number = call_params.get('PBXphone')
-        
+
         if not call_id or not phone_number:
             return jsonify({"error": "חסרים פרמטרים נדרשים"}), 400
-        
+
         # שמירת נתוני השיחה
         pbx_handler.current_calls[call_id] = call_params
         pbx_handler.db.log_call(call_params)
-        
+
         # בדיקה אם יש קלט מהמשתמש
         user_inputs = {}
         for key, value in call_params.items():
             if not key.startswith('PBX') and value:
                 user_inputs[key] = value
-        
+
         if user_inputs:
             # יש קלט מהמשתמש - צריך לטפל בו
             input_name = list(user_inputs.keys())[0]
             input_value = user_inputs[input_name]
             return pbx_handler.handle_user_input(call_id, input_name, input_value)
-        
+
         # אין קלט - זו פנייה ראשונית
         customer = pbx_handler.get_customer_by_phone(phone_number)
-        
+
         if not customer:
             # לקוח לא קיים - העברה לשלוחת הרשמה
             return handle_new_customer()
-        
+
         # בדיקת תוקף מנוי
         if not pbx_handler.is_subscription_active(customer):
             # מנוי לא בתוקף - העברה לשלוחת הצטרפות
             return handle_subscription_renewal()
-        
+
         # לקוח עם מנוי בתוקף - הצגת תפריט ראשי
         return show_main_menu()
-        
+
     except Exception as e:
         logger.error(f"שגיאה בטיפול בפנייה: {str(e)}")
         return jsonify({"error": "שגיאה בטיפול בבקשה"}), 500
@@ -85,7 +85,7 @@ def handle_new_customer():
 def handle_subscription_renewal():
     """טיפול בחידוש מנוי"""
     return jsonify({
-        "type": "simpleMenu", 
+        "type": "simpleMenu",
         "name": "renewSubscription",
         "times": 1,
         "timeout": 10,
@@ -104,7 +104,7 @@ def show_main_menu():
     """תפריט ראשי ללקוחות עם מנוי בתוקף"""
     return jsonify({
         "type": "simpleMenu",
-        "name": "mainMenu", 
+        "name": "mainMenu",
         "times": 3,
         "timeout": 15,
         "enabledKeys": "1,2,3,4,5,6,7,8,9,0",
@@ -160,7 +160,7 @@ def handle_cancel_receipt():
 def handle_update_personal_details():
     """עדכון פרטים אישיים"""
     return jsonify({
-        "type": "getDTMF", 
+        "type": "getDTMF",
         "name": "numChildren",
         "max": 2,
         "min": 1,
@@ -179,14 +179,14 @@ def handle_show_benefits(call_id: str):
     """הצגת זכויות"""
     call_data = pbx_handler.current_calls.get(call_id, {})
     phone_number = call_data.get('PBXphone')
-    
+
     if phone_number:
         customer = pbx_handler.get_customer_by_phone(phone_number)
         if customer:
             details = pbx_handler.db.get_customer_details(customer['id'])
             if details:
                 benefits = BenefitsCalculator.calculate_total_benefits(details)
-                
+
                 return jsonify({
                     "type": "simpleMenu",
                     "name": "benefitsDisplay",
@@ -201,7 +201,7 @@ def handle_show_benefits(call_id: str):
                         }
                     ]
                 })
-    
+
     # ברירת מחדל אם אין נתונים
     return jsonify({
         "type": "simpleMenu",
@@ -247,90 +247,94 @@ def handle_annual_report():
         "files": [
             {
                 "text": "הדיווח השנתי שלך יישלח אליך בהודעת SMS תוך 24 שעות. לחץ 1 לאישור או 0 לביטול.",
-                "activatedKeys": "1,0"    def handle_user_input(self, call_id: str, input_name: str, input_value: str) -> Dict:
-        """טיפול בקלט מהמשתמש"""
-        
-        # שמירת הקלט בנתוני השיחה
-        call_data = self.current_calls.get(call_id, {})
-        call_data[input_name] = input_value
-        self.current_calls[call_id] = call_data
-        
-        # עדכון במאגר הנתונים
-        self.db.update_call_data(call_id, {input_name: input_value})
-        
-        # טיפול לפי סוג הקלט
-        if input_name == 'newCustomer':
-            return self.process_new_customer_choice(call_id, input_value)
-        elif input_name == 'renewSubscription':
-            return self.process_renewal_choice(call_id, input_value)
-        elif input_name == 'mainMenu':
-            return self.process_main_menu_choice(call_id, input_value)
-        elif input_name == 'receiptAmount':
-            return self.process_receipt_amount(call_id, input_value)
-        elif input_name == 'receiptDescription':
-            return self.process_receipt_description(call_id, input_value)
-        elif input_name == 'cancelReceiptId':
-            return self.process_cancel_receipt(call_id, input_value)
-        elif input_name == 'numChildren':
-            return self.process_children_count(call_id, input_value)
-        elif input_name.startswith('child_birth_year_'):
-            return self.process_child_birth_year(call_id, input_name, input_value)
-        elif input_name == 'spouse1_workplaces':
-            return self.process_spouse_workplaces(call_id, input_name, input_value)
-        elif input_name == 'spouse2_workplaces':
-            return self.process_spouse_workplaces(call_id, input_name, input_value)
-        elif input_name == 'customerMessage':
-            return self.process_customer_message(call_id, input_value)
-        elif input_name == 'annualReport':
-            return self.process_annual_report_choice(call_id, input_value)
-        else:
-            logger.warning(f"קלט לא מזוהה: {input_name}={input_value}")
-            return self.show_main_menu()
-    
-    def process_new_customer_choice(self, call_id: str, choice: str) -> Dict:
-        """טיפול בבחירת לקוח חדש"""
-        if choice == '1':
-            # התחלת תהליך הרשמה
-            return jsonify({
-                "type": "getDTMF",
-                "name": "newCustomerName",
-                "max": 10,
-                "min": 2,
-                "timeout": 30,
-                "confirmType": "digits",
-                "setMusic": "no",
-                "files": [
-                    {
-                        "text": "אנא הכנס את מספר הזהות שלך.",
-                        "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
-                    }
+                "activatedKeys": "1,0"
+                }
                 ]
-            })
-        else:
-            return self.show_main_menu()
-    
-    def process_renewal_choice(self, call_id: str, choice: str) -> Dict:
-        """טיפול בבחירת חידוש מנוי"""
-        if choice == '1':
-            return jsonify({
-                "type": "simpleMenu",
-                "name": "renewalConfirm",
-                "times": 1,
-                "timeout": 15,
-                "enabledKeys": "1,2",
-                "setMusic": "no",
-                "files": [
-                    {
-                        "text": "חידוש מנוי עולה 120 שקל לשנה. לחץ 1 לאישור או 2 לביטול.",
-                        "activatedKeys": "1,2"
-                    }
-                ]
-            })
-        else:
-            return self.show_main_menu()
-    
-    def process_main_menu_choice(self, call_id: str, choice: str) -> Dict:
-        """#!/usr/bin/env python3
+        })
+def handle_user_input(self, call_id: str, input_name: str, input_value: str) -> Dict:
+    """טיפול בקלט מהמשתמש"""
+
+    # שמירת הקלט בנתוני השיחה
+    call_data = self.current_calls.get(call_id, {})
+    call_data[input_name] = input_value
+    self.current_calls[call_id] = call_data
+
+    # עדכון במאגר הנתונים
+    self.db.update_call_data(call_id, {input_name: input_value})
+
+    # טיפול לפי סוג הקלט
+    if input_name == 'newCustomer':
+        return self.process_new_customer_choice(call_id, input_value)
+    elif input_name == 'renewSubscription':
+        return self.process_renewal_choice(call_id, input_value)
+    elif input_name == 'mainMenu':
+        return self.process_main_menu_choice(call_id, input_value)
+    elif input_name == 'receiptAmount':
+        return self.process_receipt_amount(call_id, input_value)
+    elif input_name == 'receiptDescription':
+        return self.process_receipt_description(call_id, input_value)
+    elif input_name == 'cancelReceiptId':
+        return self.process_cancel_receipt(call_id, input_value)
+    elif input_name == 'numChildren':
+        return self.process_children_count(call_id, input_value)
+    elif input_name.startswith('child_birth_year_'):
+        return self.process_child_birth_year(call_id, input_name, input_value)
+    elif input_name == 'spouse1_workplaces':
+        return self.process_spouse_workplaces(call_id, input_name, input_value)
+    elif input_name == 'spouse2_workplaces':
+        return self.process_spouse_workplaces(call_id, input_name, input_value)
+    elif input_name == 'customerMessage':
+        return self.process_customer_message(call_id, input_value)
+    elif input_name == 'annualReport':
+        return self.process_annual_report_choice(call_id, input_value)
+    else:
+        logger.warning(f"קלט לא מזוהה: {input_name}={input_value}")
+        return self.show_main_menu()
+
+def process_new_customer_choice(self, call_id: str, choice: str) -> Dict:
+    """טיפול בבחירת לקוח חדש"""
+    if choice == '1':
+        # התחלת תהליך הרשמה
+        return jsonify({
+            "type": "getDTMF",
+            "name": "newCustomerName",
+            "max": 10,
+            "min": 2,
+            "timeout": 30,
+            "confirmType": "digits",
+            "setMusic": "no",
+            "files": [
+                {
+                    "text": "אנא הכנס את מספר הזהות שלך.",
+                    "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
+                }
+            ]
+        })
+    else:
+        return self.show_main_menu()
+
+def process_renewal_choice(self, call_id: str, choice: str) -> Dict:
+    """טיפול בבחירת חידוש מנוי"""
+    if choice == '1':
+        return jsonify({
+            "type": "simpleMenu",
+            "name": "renewalConfirm",
+            "times": 1,
+            "timeout": 15,
+            "enabledKeys": "1,2",
+            "setMusic": "no",
+            "files": [
+                {
+                    "text": "חידוש מנוי עולה 120 שקל לשנה. לחץ 1 לאישור או 2 לביטול.",
+                    "activatedKeys": "1,2"
+                }
+            ]
+        })
+    else:
+        return self.show_main_menu()
+
+def process_main_menu_choice(self, call_id: str, choice: str) -> Dict:
+    """#!/usr/bin/env python3"""
 # -*- coding: utf-8 -*-
 
 from flask import Flask, request, jsonify
