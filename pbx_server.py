@@ -892,21 +892,24 @@ class PBXHandler:
         # logger.info("מאגר נתונים הוכן בהצלחה")
     
     def get_customer_by_phone(self, phone_number: str) -> Optional[Dict]:
-        """קבלת פרטי לקוח לפי מספר טלפון"""
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        return self.db.get_customer_by_phone(phone_number)
+
+    # def get_customer_by_phone(self, phone_number: str) -> Optional[Dict]:
+    #     """קבלת פרטי לקוח לפי מספר טלפון"""
+    #     conn = sqlite3.connect(self.db_path)
+    #     conn.row_factory = sqlite3.Row
+    #     cursor = conn.cursor()
         
-        cursor.execute('''
-            SELECT * FROM customers WHERE phone_number = ?
-        ''', (phone_number,))
+    #     cursor.execute('''
+    #         SELECT * FROM customers WHERE phone_number = ?
+    #     ''', (phone_number,))
         
-        customer = cursor.fetchone()
-        conn.close()
+    #     customer = cursor.fetchone()
+    #     conn.close()
         
-        if customer:
-            return dict(customer)
-        return None
+    #     if customer:
+    #         return dict(customer)
+    #     return None
     
     def is_subscription_active(self, customer: Dict) -> bool:
         """בדיקת תוקף מנוי"""
@@ -917,28 +920,31 @@ class PBXHandler:
         return end_date >= datetime.now()
     
     def log_call(self, call_params: Dict):
-        """רישום שיחה במאגר נתונים"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        self.db.log_call(call_params)
+
+    # def log_call(self, call_params: Dict):
+    #     """רישום שיחה במאגר נתונים"""
+    #     conn = sqlite3.connect(self.db_path)
+    #     cursor = conn.cursor()
         
-        cursor.execute('''
-            INSERT OR REPLACE INTO calls 
-            (call_id, phone_number, pbx_num, pbx_did, call_type, call_status, extension_id, extension_path, call_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            call_params.get('PBXcallId'),
-            call_params.get('PBXphone'),
-            call_params.get('PBXnum'),
-            call_params.get('PBXdid'),
-            call_params.get('PBXcallType'),
-            call_params.get('PBXcallStatus'),
-            call_params.get('PBXextensionId'),
-            call_params.get('PBXextensionPath'),
-            json.dumps(call_params, ensure_ascii=False)
-        ))
+    #     cursor.execute('''
+    #         INSERT OR REPLACE INTO calls 
+    #         (call_id, phone_number, pbx_num, pbx_did, call_type, call_status, extension_id, extension_path, call_data)
+    #         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    #     ''', (
+    #         call_params.get('PBXcallId'),
+    #         call_params.get('PBXphone'),
+    #         call_params.get('PBXnum'),
+    #         call_params.get('PBXdid'),
+    #         call_params.get('PBXcallType'),
+    #         call_params.get('PBXcallStatus'),
+    #         call_params.get('PBXextensionId'),
+    #         call_params.get('PBXextensionPath'),
+    #         json.dumps(call_params, ensure_ascii=False)
+    #     ))
         
-        conn.commit()
-        conn.close()
+    #     conn.commit()
+    #     conn.close()
 
 pbx_handler = PBXHandler()
 
