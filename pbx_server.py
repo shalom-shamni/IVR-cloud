@@ -721,7 +721,7 @@ class PBXHandler:
                             "activatedKeys": "0"
                         }
                     ]
-                })
+                }
         except ValueError:
             return self.show_error_and_return_to_main()
     
