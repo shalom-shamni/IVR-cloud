@@ -1,4 +1,3 @@
-pbx_handler = PBXHandler()
 
 @app.route('/pbx', methods=['GET'])
 def handle_pbx_request():
