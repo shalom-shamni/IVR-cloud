@@ -810,84 +810,86 @@ class PBXHandler:
     
     def init_database(self):
         """יצירת מבנה מאגר הנתונים"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
+        self.db.init_database()
+        # conn = sqlite3.connect(self.db_path)
         
-        # טבלת לקוחות
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS customers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                phone_number TEXT UNIQUE NOT NULL,
-                name TEXT,
-                subscription_start_date DATE,
-                subscription_end_date DATE,
-                is_active BOOLEAN DEFAULT 1,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
+        # cursor = conn.cursor()
         
-        # טבלת פרטים אישיים לזכויות
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS customer_details (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                customer_id INTEGER,
-                num_children INTEGER DEFAULT 0,
-                children_birth_years TEXT, -- JSON array של שנות לידה
-                spouse1_workplaces INTEGER DEFAULT 0,
-                spouse2_workplaces INTEGER DEFAULT 0,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (customer_id) REFERENCES customers (id)
-            )
-        ''')
+        # # טבלת לקוחות
+        # cursor.execute('''
+        #     CREATE TABLE IF NOT EXISTS customers (
+        #         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        #         phone_number TEXT UNIQUE NOT NULL,
+        #         name TEXT,
+        #         subscription_start_date DATE,
+        #         subscription_end_date DATE,
+        #         is_active BOOLEAN DEFAULT 1,
+        #         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        #     )
+        # ''')
         
-        # טבלת שיחות
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS calls (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                call_id TEXT UNIQUE,
-                phone_number TEXT,
-                pbx_num TEXT,
-                pbx_did TEXT,
-                call_type TEXT,
-                call_status TEXT,
-                extension_id TEXT,
-                extension_path TEXT,
-                call_data TEXT, -- JSON של כל הנתונים שנאספו
-                started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                ended_at DATETIME
-            )
-        ''')
+        # # טבלת פרטים אישיים לזכויות
+        # cursor.execute('''
+        #     CREATE TABLE IF NOT EXISTS customer_details (
+        #         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        #         customer_id INTEGER,
+        #         num_children INTEGER DEFAULT 0,
+        #         children_birth_years TEXT, -- JSON array של שנות לידה
+        #         spouse1_workplaces INTEGER DEFAULT 0,
+        #         spouse2_workplaces INTEGER DEFAULT 0,
+        #         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        #         FOREIGN KEY (customer_id) REFERENCES customers (id)
+        #     )
+        # ''')
         
-        # טבלת קבלות
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS receipts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                customer_id INTEGER,
-                call_id TEXT,
-                receipt_data TEXT, -- JSON של פרטי הקבלה
-                icount_response TEXT, -- תגובה מ-iCount
-                status TEXT DEFAULT 'pending',
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (customer_id) REFERENCES customers (id)
-            )
-        ''')
+        # # טבלת שיחות
+        # cursor.execute('''
+        #     CREATE TABLE IF NOT EXISTS calls (
+        #         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        #         call_id TEXT UNIQUE,
+        #         phone_number TEXT,
+        #         pbx_num TEXT,
+        #         pbx_did TEXT,
+        #         call_type TEXT,
+        #         call_status TEXT,
+        #         extension_id TEXT,
+        #         extension_path TEXT,
+        #         call_data TEXT, -- JSON של כל הנתונים שנאספו
+        #         started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        #         ended_at DATETIME
+        #     )
+        # ''')
         
-        # טבלת הודעות
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                customer_id INTEGER,
-                call_id TEXT,
-                message_file TEXT,
-                message_text TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (customer_id) REFERENCES customers (id)
-            )
-        ''')
+        # # טבלת קבלות
+        # cursor.execute('''
+        #     CREATE TABLE IF NOT EXISTS receipts (
+        #         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        #         customer_id INTEGER,
+        #         call_id TEXT,
+        #         receipt_data TEXT, -- JSON של פרטי הקבלה
+        #         icount_response TEXT, -- תגובה מ-iCount
+        #         status TEXT DEFAULT 'pending',
+        #         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        #         FOREIGN KEY (customer_id) REFERENCES customers (id)
+        #     )
+        # ''')
         
-        conn.commit()
-        conn.close()
-        logger.info("מאגר נתונים הוכן בהצלחה")
+        # # טבלת הודעות
+        # cursor.execute('''
+        #     CREATE TABLE IF NOT EXISTS messages (
+        #         id INTEGER PRIMARY KEY AUTOINCREMENT,
+        #         customer_id INTEGER,
+        #         call_id TEXT,
+        #         message_file TEXT,
+        #         message_text TEXT,
+        #         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        #         FOREIGN KEY (customer_id) REFERENCES customers (id)
+        #     )
+        # ''')
+        
+        # conn.commit()
+        # conn.close()
+        # logger.info("מאגר נתונים הוכן בהצלחה")
     
     def get_customer_by_phone(self, phone_number: str) -> Optional[Dict]:
         """קבלת פרטי לקוח לפי מספר טלפון"""
