@@ -157,7 +157,7 @@ def handle_new_customer() -> Dict:
         "setMusic": "no",
         "extensionChange": "",
         "files": [{
-            "text": "שלום וברוך הבא לניסיון מספר 12000. נראה שאין לך עדיין מנוי במערכת שלנו. לחץ 1 להצטרפות למערכת, או לחץ 2 לחזרה לתפריט הקודם.",
+            "text": "שלום וברוך הבא. נראה שאין לך עדיין מנוי במערכת שלנו. לחץ 1 להצטרפות למערכת, או לחץ 2 לחזרה לתפריט הקודם.",
             "activatedKeys": "1,2"
         }]
     }
@@ -714,6 +714,15 @@ def handle_pbx_request():
         if call_id:
             core_keys = ['PBXphone','PBXnum','PBXdid','PBXcallType','PBXcallStatus','PBXextensionId','PBXextensionPath']
             pbx_handler.current_calls.setdefault(call_id, {}).update({k: call_params.get(k) for k in core_keys if call_params.get(k)})
+
+        # תמיכה ב-postback לאותו מסלול (/pbx) כשהמרכזיה שולחת בחירה
+        for k in [
+            'newCustomer','renewSubscription','mainMenu','receiptAmount','receiptDescription','cancelReceiptId',
+            'numChildren','spouse1_workplaces','spouse2_workplaces','annualReport','customerMessage','newCustomerID'
+        ] + [x for x in request.args.keys() if x.startswith('child_birth_year_')]:
+            if k in request.args:
+                resp = pbx_handler.handle_user_input(call_id, k, request.args.get(k))
+                return jsonify(resp)
 
         phone = call_params.get('PBXphone')
         if not phone:
