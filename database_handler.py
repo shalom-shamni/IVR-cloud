@@ -350,7 +350,7 @@ class DatabaseHandler:
             existing_data.update(new_data)
             
             cursor.execute('''
-                UPDATE calls SET call_data = ?, updated_at = CURRENT_TIMESTAMP 
+                UPDATE calls SET call_data = ? WHERE call_id = ? 
                 WHERE call_id = ?
             ''', (json.dumps(existing_data, ensure_ascii=False), call_id))
             
