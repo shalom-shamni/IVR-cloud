@@ -1033,69 +1033,127 @@ class PBXHandler:
 pbx_handler = PBXHandler()
 
 
-@app.route('/pbx', methods=['GET'])
+@app.route('/pbx', methods=['GET', 'POST'])
 def handle_pbx_request():
     """נקודת הכניסה הראשית לפניות מהמרכזיה"""
     try:
-        # קבלת פרמטרים מהמרכזיה
+        # הדפסת כל הפרמטרים שהתקבלו לצורכי debug
+        logger.info("=== בקשה חדשה מהמרכזיה ===")
+        logger.info(f"Method: {request.method}")
+        logger.info(f"URL: {request.url}")
+        logger.info(f"Args: {dict(request.args)}")
+        if request.method == 'POST':
+            logger.info(f"Form data: {dict(request.form)}")
+            logger.info(f"JSON data: {request.get_json()}")
+        
+        # קבלת פרמטרים מהמרכזיה (מ-GET או POST)
+        if request.method == 'POST':
+            # אם זה POST, ננסה לקבל מה-form data או JSON
+            if request.form:
+                params_source = request.form
+            elif request.get_json():
+                params_source = request.get_json()
+            else:
+                params_source = request.args
+        else:
+            params_source = request.args
+        
         call_params = {
-            'PBXphone': request.args.get('PBXphone'),
-            'PBXnum': request.args.get('PBXnum'),
-            'PBXdid': request.args.get('PBXdid'),
-            'PBXcallId': request.args.get('PBXcallId'),
-            'PBXcallType': request.args.get('PBXcallType'),
-            'PBXcallStatus': request.args.get('PBXcallStatus'),
-            'PBXextensionId': request.args.get('PBXextensionId'),
-            'PBXextensionPath': request.args.get('PBXextensionPath')
+            'PBXphone': params_source.get('PBXphone'),
+            'PBXnum': params_source.get('PBXnum'),
+            'PBXdid': params_source.get('PBXdid'),
+            'PBXcallId': params_source.get('PBXcallId'),
+            'PBXcallType': params_source.get('PBXcallType'),
+            'PBXcallStatus': params_source.get('PBXcallStatus'),
+            'PBXextensionId': params_source.get('PBXextensionId'),
+            'PBXextensionPath': params_source.get('PBXextensionPath')
         }
         
         # הוספת כל הפרמטרים הנוספים שנאספו
-        for key, value in request.args.items():
+        for key, value in params_source.items():
             if not key.startswith('PBX'):
                 call_params[key] = value
         
         logger.info(f"קיבלנו פנייה: {call_params}")
         
+        # הדפסת debug מפורטת של כל הפרמטרים
+        logger.info(f"כל הפרמטרים שהתקבלו:")
+        for key, value in call_params.items():
+            if value:  # רק פרמטרים שאינם ריקים
+                logger.info(f"  {key} = {value}")
+        
         call_id = call_params.get('PBXcallId')
         phone_number = call_params.get('PBXphone')
         
         if not call_id or not phone_number:
+            logger.error(f"חסרים פרמטרים נדרשים: call_id={call_id}, phone_number={phone_number}")
             return jsonify({"error": "חסרים פרמטרים נדרשים"}), 400
         
         # שמירת נתוני השיחה
         pbx_handler.current_calls[call_id] = call_params
         pbx_handler.db.log_call(call_params)
         
+        # בדיקה מיוחדת - אולי הפרמטר מגיע בשם אחר
+        possible_input_keys = [
+            'newCustomerID', 'newcustomerid', 'newCustomerId', 
+            'input', 'dtmf', 'value', 'userInput', 'response',
+            'data', 'result', 'answer'
+        ]
+        
+        logger.info("בודק שמות פרמטרים אפשריים:")
+        for possible_key in possible_input_keys:
+            if possible_key in call_params and call_params[possible_key]:
+                logger.info(f"נמצא פרמטר אפשרי: {possible_key} = {call_params[possible_key]}")
+        
         # בדיקה אם יש קלט מהמשתמש
         user_inputs = {}
         for key, value in call_params.items():
-            if not key.startswith('PBX') and value:
+            if not key.startswith('PBX') and value and str(value).strip():
                 user_inputs[key] = value
+                logger.info(f"נמצא קלט משתמש: {key} = {value}")
         
         if user_inputs:
             # יש קלט מהמשתמש - צריך לטפל בו
             input_name = list(user_inputs.keys())[0]
             input_value = user_inputs[input_name]
-            return jsonify(pbx_handler.handle_user_input(call_id, input_name, input_value))
+            logger.info(f"מעבד קלט: {input_name} = {input_value}")
+            result = pbx_handler.handle_user_input(call_id, input_name, input_value)
+            logger.info(f"תגובה לקלט: {result}")
+            return jsonify(result)
+        
+        logger.info("אין קלט משתמש - זו פנייה ראשונית")
         
         # אין קלט - זו פנייה ראשונית
         customer = pbx_handler.get_customer_by_phone(phone_number)
         
         if not customer:
             # לקוח לא קיים - העברה לשלוחת הרשמה
+            logger.info("לקוח לא קיים - מציג תפריט לקוח חדש")
             return handle_new_customer()
         
         # בדיקת תוקף מנוי
         if not pbx_handler.is_subscription_active(customer):
             # מנוי לא בתוקף - העברה לשלוחת הצטרפות
+            logger.info("מנוי לא בתוקף - מציג תפריט חידוש מנוי")
             return handle_subscription_renewal()
         
         # לקוח עם מנוי בתוקף - הצגת תפריט ראשי
+        logger.info("לקוח עם מנוי בתוקף - מציג תפריט ראשי")
         return show_main_menu()
         
     except Exception as e:
-        logger.error(f"שגיאה בטיפול בפנייה: {str(e)}")
+        logger.error(f"שגיאה בטיפול בפנייה: {str(e)}", exc_info=True)
         return jsonify({"error": "שגיאה בטיפול בבקשה"}), 500
+
+
+@app.route('/test', methods=['GET'])
+def test_route():
+    """route לבדיקה"""
+    return jsonify({
+        "status": "OK",
+        "message": "השרת פעיל",
+        "args": dict(request.args)
+    })
 
 
 def handle_new_customer():
