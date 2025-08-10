@@ -357,11 +357,20 @@ class PBXHandler:
         # טיפול לפי סוג הקלט
         if input_name == 'newCustomer':
             return self.process_new_customer_choice(call_id, input_value)
+        elif input_name == 'newCustomerID':
+            return self.process_new_customer_id(call_id, input_value)
         elif input_name == 'renewSubscription':
             return self.process_renewal_choice(call_id, input_value)
+        elif input_name == 'renewalConfirm':
+            return self.process_renewal_confirm(call_id, input_value)
         elif input_name == 'mainMenu':
             return self.process_main_menu_choice(call_id, input_value)
+        elif input_name == 'customerName':
+            return self.process_customer_name(call_id, input_value)
+        elif input_name == 'invalidID':
+            return self.process_invalid_id_choice(call_id, input_value)
         elif input_name == 'receiptAmount':
+            return self.process_receipt_amount(call_id, input_value)
             return self.process_receipt_amount(call_id, input_value)
         elif input_name == 'receiptDescription':
             return self.process_receipt_description(call_id, input_value)
@@ -381,6 +390,96 @@ class PBXHandler:
             return self.process_annual_report_choice(call_id, input_value)
         else:
             logger.warning(f"קלט לא מזוהה: {input_name}={input_value}")
+    def process_customer_name(self, call_id: str, name_code: str) -> Dict:
+        """טיפול בשם הלקוח (מקודד במספרים)"""
+        try:
+            # כאן ניתן להוסיף פענוח של השם מהמספרים
+            # לעת עתה נשמור את הקוד כפי שהוא
+            
+            call_data = self.current_calls.get(call_id, {})
+            call_data['customer_name_code'] = name_code
+            self.current_calls[call_id] = call_data
+            
+            # יצירת לקוח חדש במאגר הנתונים
+            phone_number = call_data.get('PBXphone')
+            customer_id_num = call_data.get('customer_id')
+            
+            if phone_number and customer_id_num:
+                conn = sqlite3.connect(self.db.db_path)
+                cursor = conn.cursor()
+                
+                # בדיקה אם הלקוח כבר קיים
+                cursor.execute('SELECT id FROM customers WHERE phone_number = ?', (phone_number,))
+                existing = cursor.fetchone()
+                
+                if not existing:
+                    # יצירת לקוח חדש
+                    cursor.execute('''
+                        INSERT INTO customers 
+                        (phone_number, name, subscription_start_date, subscription_end_date, is_active)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''', (
+                        phone_number,
+                        f"לקוח {customer_id_num}",  # שם זמני
+                        datetime.now().strftime('%Y-%m-%d'),
+                        (datetime.now().replace(year=datetime.now().year + 1)).strftime('%Y-%m-%d'),
+                        1
+                    ))
+                    
+                    conn.commit()
+                    logger.info(f"נוצר לקוח חדש: {phone_number}")
+                
+                conn.close()
+                
+                return {
+                    "type": "simpleMenu",
+                    "name": "registrationComplete",
+                    "times": 1,
+                    "timeout": 15,
+                    "enabledKeys": "1,0",
+                    "setMusic": "no",
+                    "files": [
+                        {
+                            "text": "ההרשמה הושלמה בהצלחה! המנוי שלך פעיל למשך שנה. לחץ 1 למעבר לתפריט הראשי או 0 לסיום השיחה.",
+                            "activatedKeys": "1,0"
+                        }
+                    ]
+                }
+            else:
+                return self.show_error_and_return_to_main()
+                
+        except Exception as e:
+            logger.error(f"שגיאה ביצירת לקוח חדש: {str(e)}")
+            return self.show_error_and_return_to_main()
+    
+    def process_invalid_id_choice(self, call_id: str, choice: str) -> Dict:
+        """טיפול בבחירה לאחר מספר זהות לא תקין"""
+        if choice == '1':
+            # נסיון נוסף להכנסת מספר זהות
+            return {
+                "type": "getDTMF",
+                "name": "newCustomerID",
+                "max": 10,
+                "min": 9,
+                "timeout": 30,
+                "confirmType": "digits",
+                "setMusic": "no",
+                "files": [
+                    {
+                        "text": "אנא הכנס את מספר הזהות שלך (9 ספרות).",
+                        "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
+                    }
+                ]
+            }
+        else:
+            return show_main_menu()
+    
+    def process_invalid_amount_choice(self, call_id: str, choice: str) -> Dict:
+        """טיפול בבחירה לאחר סכום לא תקין"""
+        if choice == '1':
+            # נסיון נוסף להכנסת סכום
+            return handle_create_receipt()
+        else:
             return show_main_menu()
     
     def process_new_customer_choice(self, call_id: str, choice: str) -> Dict:
@@ -404,7 +503,96 @@ class PBXHandler:
         else:
             return show_main_menu()
     
-    def process_renewal_choice(self, call_id: str, choice: str) -> Dict:
+    def process_new_customer_id(self, call_id: str, customer_id: str) -> Dict:
+        """טיפול במספר זהות של לקוח חדש"""
+        try:
+            # בדיקת תקינות מספר זהות (9 ספרות)
+            if len(customer_id) != 9 or not customer_id.isdigit():
+                return {
+                    "type": "simpleMenu",
+                    "name": "invalidID",
+                    "times": 1,
+                    "timeout": 10,
+                    "enabledKeys": "1,0",
+                    "setMusic": "no",
+                    "files": [
+                        {
+                            "text": "מספר זהות לא תקין. לחץ 1 לנסות שוב או 0 לחזרה לתפריט הראשי.",
+                            "activatedKeys": "1,0"
+                        }
+                    ]
+                }
+            
+            # כאן ניתן להוסיף בדיקת לוהן או בדיקות נוספות
+            
+            # שמירת מספר הזהות והמשך לתהליך הרשמה
+            call_data = self.current_calls.get(call_id, {})
+            call_data['customer_id'] = customer_id
+            self.current_calls[call_id] = call_data
+            
+            return {
+                "type": "getDTMF",
+                "name": "customerName",
+                "max": 20,
+                "min": 2,
+                "timeout": 30,
+                "confirmType": "digits",
+                "setMusic": "no",
+                "files": [
+                    {
+                        "text": "אנא הכנס את השם המלא שלך באמצעות המקלדת (רק מספרים לקידוד).",
+                        "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
+                    }
+                ]
+            }
+            
+        except Exception as e:
+            logger.error(f"שגיאה בטיפול במספר זהות: {str(e)}")
+            return self.show_error_and_return_to_main()
+    
+    def process_renewal_confirm(self, call_id: str, choice: str) -> Dict:
+        """טיפול באישור חידוש מנוי"""
+        if choice == '1':
+            # אישור חידוש מנוי
+            call_data = self.current_calls.get(call_id, {})
+            phone_number = call_data.get('PBXphone')
+            
+            if phone_number:
+                # כאן ניתן להוסיף לוגיקה של תשלום וחידוש מנוי
+                # לעת עתה נחזיר הודעת אישור
+                
+                return {
+                    "type": "simpleMenu",
+                    "name": "renewalSuccess",
+                    "times": 1,
+                    "timeout": 15,
+                    "enabledKeys": "0",
+                    "setMusic": "no",
+                    "files": [
+                        {
+                            "text": "תודה! פרטי החידוש נשלחו אליך בהודעת SMS. המנוי יחודש לאחר ביצוע התשלום. לחץ 0 לסיום.",
+                            "activatedKeys": "0"
+                        }
+                    ]
+                }
+            else:
+                return self.show_error_and_return_to_main()
+        else:
+            # ביטול חידוש מנוי
+            return {
+                "type": "simpleMenu",
+                "name": "renewalCanceled",
+                "times": 1,
+                "timeout": 10,
+                "enabledKeys": "0",
+                "setMusic": "no",
+                "files": [
+                    {
+                        "text": "חידוש המנוי בוטל. לחץ 0 לסיום השיחה.",
+                        "activatedKeys": "0"
+                    }
+                ]
+            }
         """טיפול בבחירת חידוש מנוי"""
         if choice == '1':
             return {
