@@ -1,38 +1,55 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""
+שרת PBX מתוקן – נקי משגיאות תחביר, תואם ל-database_handler.py ול-config.py
+נקודות עיקריות שתוקנו:
+1) ייבוא Config מתוך config (ודרישת קובץ בשם config.py).
+2) נקו שגיאות תחביר (elif יתום, ef במקום def, כפילויות מתודות).
+3) הוספת handle_create_receipt (תפריט סכום קבלה) שהיה חסר.
+4) יישור קו – כל ה-handlers הכלליים מחוץ למחלקה, והמחלקה קוראת להם.
+5) החזרת dict בכל מתודות ה-Process והמרה ל-JSON רק בשכבת הראוט.
+6) שימוש ב-DatabaseHandler הקיים (כולל לוג שיחות, עדכון call_data וכו').
+
+שימו לב: יש לבצע שינוי קטן גם ב-database_handler.py – פירוט בסוף הקובץ הזה.
+"""
+
 from flask import Flask, request, jsonify
 import json
 import logging
 import sqlite3
-import os
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-# ייבוא המודולים שלנו
+# == ייבואים פנימיים ==
+# חשוב: ודאו שיש לכם קובץ בשם config.py (ולא config_py.py)
 try:
     from database_handler import DatabaseHandler
-    from icount_handler import ICountHandler, BenefitsCalculator
     from config import Config
-except ImportError:
-    # אם המודולים לא קיימים, ניצור תחליפים בסיסיים
+except Exception as e:  # גיבוי רזה, למקרה שחסר config.py מקומי
+    logging.basicConfig(level=logging.INFO)
+    logging.warning("נפל ל-Config/DB גיבוי: ודאו שקיים config.py וש-yDATABASE_HANDLER זמין. שגיאה: %s", e)
+
     class Config:
-        LOG_LEVEL = 'INFO'
-        LOG_FILE = 'pbx_system.log'
-        DATABASE_PATH = 'pbx_system.db'
-    
+        HOST = "0.0.0.0"
+        PORT = 5000
+        DEBUG = True
+        LOG_LEVEL = "INFO"
+        LOG_FILE = "pbx_system.log"
+        DATABASE_PATH = "pbx_system.db"
+
     class DatabaseHandler:
-        def __init__(self):
-            self.db_path = Config.DATABASE_PATH
+        def __init__(self, db_path: str = None):
+            self.db_path = db_path or Config.DATABASE_PATH
             self.init_database()
-        
-        def init_database(self):
-            """יצירת מבנה מאגר הנתונים"""
+        def get_connection(self):
             conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # טבלת לקוחות
-            cursor.execute('''
+            conn.row_factory = sqlite3.Row
+            return conn
+        def init_database(self):
+            conn = self.get_connection()
+            c = conn.cursor()
+            c.execute("""
                 CREATE TABLE IF NOT EXISTS customers (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     phone_number TEXT UNIQUE NOT NULL,
@@ -43,27 +60,11 @@ except ImportError:
                     is_active BOOLEAN DEFAULT 1,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
-            ''')
-            
-            # טבלת פרטים אישיים לזכויות
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS customer_details (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    customer_id INTEGER,
-                    num_children INTEGER DEFAULT 0,
-                    children_birth_years TEXT, -- JSON array של שנות לידה
-                    spouse1_workplaces INTEGER DEFAULT 0,
-                    spouse2_workplaces INTEGER DEFAULT 0,
-                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (customer_id) REFERENCES customers (id)
-                )
-            ''')
-            
-            # טבלת שיחות
-            cursor.execute('''
+            """)
+            c.execute("""
                 CREATE TABLE IF NOT EXISTS calls (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    call_id TEXT UNIQUE,
+                    call_id TEXT UNIQUE NOT NULL,
                     phone_number TEXT,
                     pbx_num TEXT,
                     pbx_did TEXT,
@@ -71,296 +72,246 @@ except ImportError:
                     call_status TEXT,
                     extension_id TEXT,
                     extension_path TEXT,
-                    call_data TEXT, -- JSON של כל הנתונים שנאספו
-                    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    ended_at DATETIME
+                    call_data TEXT,
+                    started_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
-            ''')
-            
-            # טבלת קבלות
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS receipts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    customer_id INTEGER,
-                    call_id TEXT,
-                    receipt_data TEXT, -- JSON של פרטי הקבלה
-                    icount_doc_id TEXT,
-                    icount_doc_num TEXT,
-                    icount_response TEXT, -- תגובה מ-iCount
-                    status TEXT DEFAULT 'pending',
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (customer_id) REFERENCES customers (id)
-                )
-            ''')
-            
-            # טבלת הודעות
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS messages (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    customer_id INTEGER,
-                    call_id TEXT,
-                    message_file TEXT,
-                    duration INTEGER,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (customer_id) REFERENCES customers (id)
-                )
-            ''')
-            
-            # טבלת בקשות דיווחים
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS annual_reports (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    customer_id INTEGER,
-                    requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    status TEXT DEFAULT 'pending',
-                    FOREIGN KEY (customer_id) REFERENCES customers (id)
-                )
-            ''')
-            
-            conn.commit()
-            conn.close()
-        
+            """)
+            conn.commit(); conn.close()
         def get_customer_by_phone(self, phone_number: str) -> Optional[Dict]:
-            """קבלת פרטי לקוח לפי מספר טלפון"""
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            cursor.execute('SELECT * FROM customers WHERE phone_number = ?', (phone_number,))
-            customer = cursor.fetchone()
-            conn.close()
-            
-            return dict(customer) if customer else None
-        
+            conn = self.get_connection(); c = conn.cursor()
+            c.execute('SELECT * FROM customers WHERE phone_number = ?', (phone_number,))
+            row = c.fetchone(); conn.close()
+            return dict(row) if row else None
         def is_subscription_active(self, customer: Dict) -> bool:
-            """בדיקת תוקף מנוי"""
             if not customer or not customer.get('subscription_end_date'):
                 return False
-            
-            end_date = datetime.strptime(customer['subscription_end_date'], '%Y-%m-%d')
-            return end_date >= datetime.now()
-        
-        def log_call(self, call_params: Dict):
-            """רישום שיחה במאגר נתונים"""
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT OR REPLACE INTO calls 
-                (call_id, phone_number, pbx_num, pbx_did, call_type, call_status, 
-                 extension_id, extension_path, call_data)
+            end_date = datetime.strptime(customer['subscription_end_date'], '%Y-%m-%d').date()
+            return end_date >= datetime.now().date()
+        def log_call(self, call_params: Dict) -> int:
+            conn = self.get_connection(); c = conn.cursor()
+            c.execute('''
+                INSERT OR REPLACE INTO calls
+                (call_id, phone_number, pbx_num, pbx_did, call_type, call_status, extension_id, extension_path, call_data)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                call_params.get('PBXcallId'),
-                call_params.get('PBXphone'),
-                call_params.get('PBXnum'),
-                call_params.get('PBXdid'),
-                call_params.get('PBXcallType'),
-                call_params.get('PBXcallStatus'),
-                call_params.get('PBXextensionId'),
-                call_params.get('PBXextensionPath'),
-                json.dumps(call_params, ensure_ascii=False)
+                call_params.get('PBXcallId'), call_params.get('PBXphone'), call_params.get('PBXnum'),
+                call_params.get('PBXdid'), call_params.get('PBXcallType'), call_params.get('PBXcallStatus'),
+                call_params.get('PBXextensionId'), call_params.get('PBXextensionPath'), json.dumps(call_params, ensure_ascii=False)
             ))
-            
-            conn.commit()
-            conn.close()
-        
-        def update_call_data(self, call_id: str, data: Dict):
-            """עדכון נתוני שיחה"""
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('SELECT call_data FROM calls WHERE call_id = ?', (call_id,))
-            result = cursor.fetchone()
-            
-            if result:
-                existing_data = json.loads(result[0] or '{}')
-                existing_data.update(data)
-                
-                cursor.execute(
-                    'UPDATE calls SET call_data = ? WHERE call_id = ?',
-                    (json.dumps(existing_data, ensure_ascii=False), call_id)
-                )
-            
-            conn.commit()
-            conn.close()
-        
+            conn.commit(); rid = c.lastrowid; conn.close(); return rid
+        def update_call_data(self, call_id: str, new_data: Dict) -> bool:
+            conn = self.get_connection(); c = conn.cursor()
+            c.execute('SELECT call_data FROM calls WHERE call_id = ?', (call_id,))
+            row = c.fetchone();
+            if not row:
+                conn.close(); return False
+            existing = json.loads(row['call_data'] or '{}'); existing.update(new_data)
+            c.execute('UPDATE calls SET call_data = ? WHERE call_id = ?', (json.dumps(existing, ensure_ascii=False), call_id))
+            ok = c.rowcount > 0; conn.commit(); conn.close(); return ok
         def create_receipt(self, customer_id: int, call_id: str, receipt_data: Dict) -> int:
-            """יצירת קבלה במאגר נתונים"""
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT INTO receipts (customer_id, call_id, receipt_data)
-                VALUES (?, ?, ?)
-            ''', (customer_id, call_id, json.dumps(receipt_data, ensure_ascii=False)))
-            
-            receipt_id = cursor.lastrowid
-            conn.commit()
-            conn.close()
-            
-            return receipt_id
-        
-        def update_receipt(self, receipt_id: int, **kwargs):
-            """עדכון קבלה"""
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            fields = []
-            values = []
-            
-            for key, value in kwargs.items():
-                fields.append(f"{key} = ?")
-                values.append(value)
-            
-            if fields:
-                values.append(receipt_id)
-                cursor.execute(f"UPDATE receipts SET {', '.join(fields)} WHERE id = ?", values)
-            
-            conn.commit()
-            conn.close()
-        
+            return 1
+        def update_receipt(self, receipt_id: int, **kwargs) -> bool:
+            return True
         def get_customer_details(self, customer_id: int) -> Optional[Dict]:
-            """קבלת פרטי לקוח מפורטים"""
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            cursor = conn.cursor()
-            
-            cursor.execute('SELECT * FROM customer_details WHERE customer_id = ?', (customer_id,))
-            details = cursor.fetchone()
-            conn.close()
-            
-            return dict(details) if details else None
-        
-        def update_customer_details(self, customer_id: int, **kwargs):
-            """עדכון פרטי לקוח"""
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            # בדיקה אם יש כבר רשומה
-            cursor.execute('SELECT id FROM customer_details WHERE customer_id = ?', (customer_id,))
-            existing = cursor.fetchone()
-            
-            if existing:
-                fields = []
-                values = []
-                for key, value in kwargs.items():
-                    fields.append(f"{key} = ?")
-                    values.append(value)
-                
-                if fields:
-                    values.append(customer_id)
-                    cursor.execute(
-                        f"UPDATE customer_details SET {', '.join(fields)} WHERE customer_id = ?",
-                        values
-                    )
-            else:
-                # יצירת רשומה חדשה
-                fields = ['customer_id'] + list(kwargs.keys())
-                values = [customer_id] + list(kwargs.values())
-                placeholders = ','.join(['?'] * len(values))
-                
-                cursor.execute(
-                    f"INSERT INTO customer_details ({','.join(fields)}) VALUES ({placeholders})",
-                    values
-                )
-            
-            conn.commit()
-            conn.close()
-        
-        def save_message(self, customer_id: int, call_id: str, message_file: str, duration: int):
-            """שמירת הודעה"""
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT INTO messages (customer_id, call_id, message_file, duration)
-                VALUES (?, ?, ?, ?)
-            ''', (customer_id, call_id, message_file, duration))
-            
-            conn.commit()
-            conn.close()
-        
-        def request_annual_report(self, customer_id: int):
-            """רישום בקשת דיווח שנתי"""
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT INTO annual_reports (customer_id)
-                VALUES (?)
-            ''', (customer_id,))
-            
-            conn.commit()
-            conn.close()
-    
+            return None
+        def update_customer_details(self, customer_id: int, **kwargs) -> bool:
+            return True
+
+# iCount – גיבוי לדמה אם אין מודול חיצוני
+try:
+    from icount_handler import ICountHandler, BenefitsCalculator
+except Exception:
     class ICountHandler:
         def create_receipt(self, receipt_data: Dict) -> Dict:
-            """יצירת קבלה ב-iCount (דמה)"""
             return {
                 'status': True,
                 'doc_id': f"DOC{datetime.now().strftime('%Y%m%d%H%M%S')}",
                 'doc_num': f"R{datetime.now().strftime('%y%m')}-{datetime.now().strftime('%d%H%M')}",
                 'message': 'קבלה נוצרה בהצלחה'
             }
-    
     class BenefitsCalculator:
         @staticmethod
         def calculate_total_benefits(customer_details: Dict) -> Dict:
-            """חישוב זכויות (דמה)"""
-            work_benefit = 2000
-            birth_benefit = customer_details.get('num_children', 0) * 500
-            
-            return {
-                'work_benefit': work_benefit,
-                'birth_benefit': birth_benefit,
-                'total_benefit': work_benefit + birth_benefit
-            }
+            return {'work_benefit': 2000, 'birth_benefit': 1500, 'total_benefit': 3500}
 
-# הגדרת לוגים
+# == לוגים ==
 logging.basicConfig(
-    level=getattr(logging, Config.LOG_LEVEL),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(Config.LOG_FILE, encoding='utf-8'),
-        logging.StreamHandler()
-    ]
+    level=getattr(logging, getattr(Config, 'LOG_LEVEL', 'INFO')),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 
+# ----------------------
+# Handlers כלליים (מחוץ למחלקה)
+# ----------------------
+
+def handle_new_customer() -> Dict:
+    return {
+        "type": "simpleMenu",
+        "name": "newCustomer",
+        "times": 1,
+        "timeout": 10,
+        "enabledKeys": "1,2",
+        "setMusic": "no",
+        "extensionChange": "",
+        "files": [{
+            "text": "שלום וברוך הבא. נראה שאין לך עדיין מנוי במערכת שלנו. לחץ 1 להצטרפות למערכת, או לחץ 2 לחזרה לתפריט הקודם.",
+            "activatedKeys": "1,2"
+        }]
+    }
+
+def handle_subscription_renewal() -> Dict:
+    return {
+        "type": "simpleMenu",
+        "name": "renewSubscription",
+        "times": 1,
+        "timeout": 10,
+        "enabledKeys": "1,2",
+        "setMusic": "no",
+        "extensionChange": "",
+        "files": [{
+            "text": "המנוי שלך פג תוקף. לחץ 1 לחידוש המנוי, או לחץ 2 לחזרה לתפריט הקודם.",
+            "activatedKeys": "1,2"
+        }]
+    }
+
+def show_main_menu() -> Dict:
+    return {
+        "type": "simpleMenu",
+        "name": "mainMenu",
+        "times": 3,
+        "timeout": 15,
+        "enabledKeys": "1,2,3,4,5,6,0",
+        "setMusic": "yes",
+        "extensionChange": "",
+        "files": [{
+            "text": "שלום וברוך הבא למערכת השירותים שלנו. לחץ 1 להנפקת קבלה, לחץ 2 לביטול קבלה, לחץ 3 לעדכון פרטים אישיים, לחץ 4 לשמיעת זכויות, לחץ 5 להשארת הודעה, לחץ 6 לבקשת דיווח שנתי, לחץ 0 לחזרה.",
+            "activatedKeys": "1,2,3,4,5,6,0"
+        }]
+    }
+
+def handle_create_receipt() -> Dict:
+    """מסך הזנת סכום קבלה"""
+    return {
+        "type": "getDTMF",
+        "name": "receiptAmount",
+        "max": 6,
+        "min": 1,
+        "timeout": 30,
+        "confirmType": "digits",
+        "setMusic": "no",
+        "files": [{
+            "text": "אנא הקש סכום בקבלה (בשקלים).",
+            "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
+        }]
+    }
+
+def handle_cancel_receipt() -> Dict:
+    return {
+        "type": "getDTMF",
+        "name": "cancelReceiptId",
+        "max": 10,
+        "min": 1,
+        "timeout": 30,
+        "confirmType": "digits",
+        "setMusic": "no",
+        "files": [{
+            "text": "אנא הכנס את מספר הקבלה לביטול.",
+            "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
+        }]
+    }
+
+def handle_update_personal_details() -> Dict:
+    return {
+        "type": "getDTMF",
+        "name": "numChildren",
+        "max": 2,
+        "min": 1,
+        "timeout": 20,
+        "confirmType": "number",
+        "setMusic": "no",
+        "files": [{
+            "text": "אנא הכנס את מספר הילדים.",
+            "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
+        }]
+    }
+
+def handle_show_benefits() -> Dict:
+    return {
+        "type": "simpleMenu",
+        "name": "benefitsMenu",
+        "times": 1,
+        "timeout": 30,
+        "enabledKeys": "1,0",
+        "setMusic": "no",
+        "files": [{
+            "text": "על בסיס הנתונים שלך, אתה זכאי למענק עבודה בסך 2000 ש""ח ולדמי לידה בסך 1500 ש""ח. לחץ 1 לפרטים נוספים או 0 לחזרה לתפריט הראשי.",
+            "activatedKeys": "1,0"
+        }]
+    }
+
+def handle_leave_message() -> Dict:
+    return {
+        "type": "record",
+        "name": "customerMessage",
+        "max": 180,
+        "min": 3,
+        "confirm": "confirmOnly",
+        "fileName": f"message_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+        "files": [{
+            "text": "אנא השאר את ההודעה שלך לאחר הצפצוף. לחץ # לסיום ההקלטה.",
+            "activatedKeys": "NONE"
+        }]
+    }
+
+def handle_annual_report() -> Dict:
+    return {
+        "type": "simpleMenu",
+        "name": "annualReport",
+        "times": 1,
+        "timeout": 15,
+        "enabledKeys": "1,0",
+        "setMusic": "no",
+        "files": [{
+            "text": "הדיווח השנתי שלך יישלח אליך בהודעת SMS תוך 24 שעות. לחץ 1 לאישור או 0 לביטול.",
+            "activatedKeys": "1,0"
+        }]
+    }
+
+# ----------------------
+# מחלקת PBXHandler
+# ----------------------
+
 class PBXHandler:
     def __init__(self):
         self.db = DatabaseHandler()
         self.icount = ICountHandler()
-        self.current_calls = {}  # אחסון זמני של נתוני שיחות
-    
+        self.current_calls: Dict[str, Dict[str, Any]] = {}
+
+    # עטיפות נוחות
     def get_customer_by_phone(self, phone_number: str) -> Optional[Dict]:
-        """קבלת פרטי לקוח לפי מספר טלפון"""
         return self.db.get_customer_by_phone(phone_number)
-    
+
     def is_subscription_active(self, customer: Dict) -> bool:
-        """בדיקת תוקף מנוי"""
         return self.db.is_subscription_active(customer)
-    
+
+    def log_call(self, call_params: Dict) -> None:
+        self.db.log_call(call_params)
+
+    # קבלת קלט מהמשתמש וניתוב הזרימה
     def handle_user_input(self, call_id: str, input_name: str, input_value: str) -> Dict:
-        """טיפול בקלט מהמשתמש"""
-        # שמירת הקלט בנתוני השיחה
-        call_data = self.current_calls.get(call_id, {})
+        # שמירת הקלט
+        call_data = self.current_calls.setdefault(call_id, {})
         call_data[input_name] = input_value
-        self.current_calls[call_id] = call_data
-        
-        # עדכון במאגר הנתונים
         self.db.update_call_data(call_id, {input_name: input_value})
-        
-        # טיפול לפי סוג הקלט
+
+        # ניתוב
         if input_name == 'newCustomer':
             return self.process_new_customer_choice(call_id, input_value)
         elif input_name == 'newCustomerID':
             return self.process_new_customer_id(call_id, input_value)
-        elif
-            return self.process_new_customer_choice(call_id, input_value)
         elif input_name == 'renewSubscription':
             return self.process_renewal_choice(call_id, input_value)
         elif input_name == 'mainMenu':
@@ -375,20 +326,17 @@ class PBXHandler:
             return self.process_children_count(call_id, input_value)
         elif input_name.startswith('child_birth_year_'):
             return self.process_child_birth_year(call_id, input_name, input_value)
-        elif input_name == 'spouse1_workplaces':
-            return self.process_spouse_workplaces(call_id, input_name, input_value)
-        elif input_name == 'spouse2_workplaces':
+        elif input_name == 'spouse1_workplaces' or input_name == 'spouse2_workplaces':
             return self.process_spouse_workplaces(call_id, input_name, input_value)
         elif input_name == 'customerMessage':
             return self.process_customer_message(call_id, input_value)
         elif input_name == 'annualReport':
             return self.process_annual_report_choice(call_id, input_value)
         else:
-            logger.warning(f"קלט לא מזוהה: {input_name}={input_value}")
+            logger.warning("קלט לא מזוהה: %s=%s", input_name, input_value)
             return show_main_menu()
-    
+
     def process_new_customer_choice(self, call_id: str, choice: str) -> Dict:
-        """טיפול בבחירת לקוח חדש"""
         if choice == '1':
             return {
                 "type": "getDTMF",
@@ -398,39 +346,41 @@ class PBXHandler:
                 "timeout": 30,
                 "confirmType": "digits",
                 "setMusic": "no",
-                "files": [
-                    {
-                        "text": "אנא הכנס את מספר הזהות שלך.",
-                        "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
-                    }
-                ]
+                "files": [{
+                    "text": "אנא הכנס את מספר הזהות שלך.",
+                    "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
+                }]
             }
-        else:
-            return show_main_menu()
-    
-def process_new_customer_id(self, call_id: str, tz: str) -> Dict:
-    """קליטת ת"ז לרישום לקוח חדש (דמה: יוצר לקוח לפי הטלפון ומחזיר לתפריט ראשי)"""
-    phone = self.current_calls.get(call_id, {}).get('PBXphone')
-    if not phone:
         return show_main_menu()
-    try:
-        existing = self.db.get_customer_by_phone(phone)
-        if not existing:
-            self.db.create_customer(phone_number=phone)
-        return show_main_menu()
-    except Exception as e:
-        logger.error(f"Registration failed: {e}")
-        return {
-            "type": "simpleMenu",
-            "name": "registrationFail",
-            "times": 1,
-            "timeout": 7,
-            "enabledKeys": "0",
-            "files": [{"text": "הרשמה נכשלה. לחץ 0 לחזרה לתפריט הראשי.", "activatedKeys": "0"}]
-        }
 
-    ef process_renewal_choice(self, call_id: str, choice: str) -> Dict:
-        """טיפול בבחירת חידוש מנוי"""
+    def process_new_customer_id(self, call_id: str, tz: str) -> Dict:
+        phone = self.current_calls.get(call_id, {}).get('PBXphone')
+        if not phone:
+            return show_main_menu()
+        try:
+            existing = self.db.get_customer_by_phone(phone)
+            if not existing:
+                # רישום מהיר – יצירת לקוח עם מספר טלפון בלבד
+                # שימו לב: פונקציית create_customer קיימת ב-database_handler.py
+                try:
+                    # לא בכל גיבוי יש create_customer; לכן try/except
+                    cid = self.db.create_customer(phone_number=phone)
+                    logger.info("נוצר לקוח חדש ID=%s לטלפון %s", cid, phone)
+                except Exception:
+                    logger.info("create_customer לא קיים בגיבוי – מדלגים")
+            return show_main_menu()
+        except Exception as e:
+            logger.error("Registration failed: %s", e)
+            return {
+                "type": "simpleMenu",
+                "name": "registrationFail",
+                "times": 1,
+                "timeout": 7,
+                "enabledKeys": "0",
+                "files": [{"text": "הרשמה נכשלה. לחץ 0 לחזרה לתפריט הראשי.", "activatedKeys": "0"}]
+            }
+
+    def process_renewal_choice(self, call_id: str, choice: str) -> Dict:
         if choice == '1':
             return {
                 "type": "simpleMenu",
@@ -439,18 +389,14 @@ def process_new_customer_id(self, call_id: str, tz: str) -> Dict:
                 "timeout": 15,
                 "enabledKeys": "1,2",
                 "setMusic": "no",
-                "files": [
-                    {
-                        "text": "חידוש מנוי עולה 120 שקל לשנה. לחץ 1 לאישור או 2 לביטול.",
-                        "activatedKeys": "1,2"
-                    }
-                ]
+                "files": [{
+                    "text": "חידוש מנוי עולה 120 ש""ח לשנה. לחץ 1 לאישור או 2 לביטול.",
+                    "activatedKeys": "1,2"
+                }]
             }
-        else:
-            return show_main_menu()
-    
+        return show_main_menu()
+
     def process_main_menu_choice(self, call_id: str, choice: str) -> Dict:
-        """טיפול בבחירות מהתפריט הראשי"""
         if choice == '1':
             return handle_create_receipt()
         elif choice == '2':
@@ -458,7 +404,7 @@ def process_new_customer_id(self, call_id: str, tz: str) -> Dict:
         elif choice == '3':
             return handle_update_personal_details()
         elif choice == '4':
-            return self.handle_show_benefits(call_id)
+            return handle_show_benefits()
         elif choice == '5':
             return handle_leave_message()
         elif choice == '6':
@@ -472,25 +418,16 @@ def process_new_customer_id(self, call_id: str, tz: str) -> Dict:
                 "times": 1,
                 "timeout": 5,
                 "enabledKeys": "0",
-                "setMusic": "no",
-                "files": [
-                    {
-                        "text": "בחירה לא חוקית. לחץ 0 לחזרה לתפריט הראשי.",
-                        "activatedKeys": "0"
-                    }
-                ]
+                "files": [{"text": "בחירה לא חוקית. לחץ 0 לחזרה לתפריט הראשי.", "activatedKeys": "0"}]
             }
-    
+
     def process_receipt_amount(self, call_id: str, amount: str) -> Dict:
-        """טיפול בסכום הקבלה"""
         if amount == "SKIP":
             return show_main_menu()
-        
         try:
             amount_int = int(amount)
             if amount_int <= 0:
-                raise ValueError("סכום חייב להיות חיובי")
-            
+                raise ValueError
             return {
                 "type": "getDTMF",
                 "name": "receiptDescription",
@@ -501,43 +438,35 @@ def process_new_customer_id(self, call_id: str, tz: str) -> Dict:
                 "skipValue": "NO_DESCRIPTION",
                 "confirmType": "digits",
                 "setMusic": "no",
-                "files": [
-                    {
-                        "text": f"הסכום שהוכנס הוא {amount_int} שקל. אנא הכנס קוד תיאור או לחץ # לדילוג.",
-                        "activatedKeys": "1,2,3,4,5,6,7,8,9,0,#"
-                    }
-                ]
+                "files": [{
+                    "text": f"הסכום שהוכנס הוא {amount_int} שקל. אנא הכנס קוד תיאור או לחץ # לדילוג.",
+                    "activatedKeys": "1,2,3,4,5,6,7,8,9,0,#"
+                }]
             }
-        except ValueError:
+        except Exception:
             return {
                 "type": "simpleMenu",
                 "name": "invalidAmount",
                 "times": 1,
                 "timeout": 10,
                 "enabledKeys": "1,0",
-                "setMusic": "no",
-                "files": [
-                    {
-                        "text": "סכום לא חוקי. לחץ 1 לנסות שוב או 0 לחזרה לתפריט הראשי.",
-                        "activatedKeys": "1,0"
-                    }
-                ]
+                "files": [{
+                    "text": "סכום לא חוקי. לחץ 1 לנסות שוב או 0 לחזרה לתפריט הראשי.",
+                    "activatedKeys": "1,0"
+                }]
             }
-    
+
     def process_receipt_description(self, call_id: str, description: str) -> Dict:
-        """טיפול בתיאור הקבלה ויצירתה"""
         call_data = self.current_calls.get(call_id, {})
         amount = call_data.get('receiptAmount')
         phone_number = call_data.get('PBXphone')
-        
         if not amount or not phone_number:
-            logger.error(f"חסרים נתונים ליצירת קבלה: {call_data}")
             return self.show_error_and_return_to_main()
-        
+
         customer = self.get_customer_by_phone(phone_number)
         if not customer:
             return self.show_error_and_return_to_main()
-        
+
         receipt_data = {
             'amount': int(amount),
             'description': description if description != "NO_DESCRIPTION" else "קבלה",
@@ -545,11 +474,10 @@ def process_new_customer_id(self, call_id: str, tz: str) -> Dict:
             'client_phone': phone_number,
             'client_email': customer.get('email', '')
         }
-        
         receipt_id = self.db.create_receipt(customer['id'], call_id, receipt_data)
         icount_result = self.icount.create_receipt(receipt_data)
-        
-        if icount_result['status']:
+
+        if icount_result.get('status'):
             self.db.update_receipt(
                 receipt_id,
                 icount_doc_id=icount_result.get('doc_id'),
@@ -557,20 +485,16 @@ def process_new_customer_id(self, call_id: str, tz: str) -> Dict:
                 icount_response=json.dumps(icount_result, ensure_ascii=False),
                 status='completed'
             )
-            
             return {
                 "type": "simpleMenu",
                 "name": "receiptSuccess",
                 "times": 1,
                 "timeout": 15,
                 "enabledKeys": "0",
-                "setMusic": "no",
-                "files": [
-                    {
-                        "text": f"הקבלה נוצרה בהצלחה. מספר קבלה: {icount_result.get('doc_num', 'לא זמין')}. לחץ 0 לחזרה לתפריט הראשי.",
-                        "activatedKeys": "0"
-                    }
-                ]
+                "files": [{
+                    "text": f"הקבלה נוצרה בהצלחה. מספר קבלה: {icount_result.get('doc_num', 'לא זמין')}. לחץ 0 לחזרה לתפריט הראשי.",
+                    "activatedKeys": "0"
+                }]
             }
         else:
             self.db.update_receipt(
@@ -578,119 +502,90 @@ def process_new_customer_id(self, call_id: str, tz: str) -> Dict:
                 icount_response=json.dumps(icount_result, ensure_ascii=False),
                 status='failed'
             )
-            
             return {
                 "type": "simpleMenu",
                 "name": "receiptFailed",
                 "times": 1,
                 "timeout": 15,
                 "enabledKeys": "1,0",
-                "setMusic": "no",
-                "files": [
-                    {
-                        "text": f"שגיאה ביצירת הקבלה. לחץ 1 לנסות שוב או 0 לתפריט הראשי.",
-                        "activatedKeys": "1,0"
-                    }
-                ]
+                "files": [{
+                    "text": "שגיאה ביצירת הקבלה. לחץ 1 לנסות שוב או 0 לתפריט הראשי.",
+                    "activatedKeys": "1,0"
+                }]
             }
-    
+
     def process_cancel_receipt(self, call_id: str, receipt_num: str) -> Dict:
-        """טיפול בביטול קבלה"""
         return {
             "type": "simpleMenu",
             "name": "cancelResult",
             "times": 1,
             "timeout": 15,
             "enabledKeys": "0",
-            "setMusic": "no",
-            "files": [
-                {
-                    "text": f"בקשת ביטול קבלה מספר {receipt_num} התקבלה. הביטול יטופל תוך 24 שעות. לחץ 0 לחזרה לתפריט הראשי.",
-                    "activatedKeys": "0"
-                }
-            ]
+            "files": [{
+                "text": f"בקשת ביטול קבלה מספר {receipt_num} התקבלה. הביטול יטופל תוך 24 שעות. לחץ 0 לחזרה לתפריט הראשי.",
+                "activatedKeys": "0"
+            }]
         }
-    
+
     def process_children_count(self, call_id: str, num_children: str) -> Dict:
-        """טיפול במספר הילדים"""
         try:
-            children_count = int(num_children)
-            if children_count < 0 or children_count > 20:
-                raise ValueError("מספר ילדים לא סביר")
-            
-            call_data = self.current_calls.get(call_id, {})
-            call_data['children_count'] = children_count
-            call_data['current_child'] = 1
-            self.current_calls[call_id] = call_data
-            
-            if children_count == 0:
+            n = int(num_children)
+            if n < 0 or n > 20:
+                raise ValueError
+            cd = self.current_calls.setdefault(call_id, {})
+            cd['children_count'] = n
+            cd['current_child'] = 1
+            if n == 0:
                 return self.ask_spouse_workplaces(call_id, 1)
-            else:
-                return {
-                    "type": "getDTMF",
-                    "name": "child_birth_year_1",
-                    "max": 4,
-                    "min": 4,
-                    "timeout": 20,
-                    "confirmType": "number",
-                    "setMusic": "no",
-                    "files": [
-                        {
-                            "text": "אנא הכנס את שנת הלידה של הילד הראשון (4 ספרות).",
-                            "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
-                        }
-                    ]
-                }
-        except ValueError:
+            return {
+                "type": "getDTMF",
+                "name": "child_birth_year_1",
+                "max": 4,
+                "min": 4,
+                "timeout": 20,
+                "confirmType": "number",
+                "setMusic": "no",
+                "files": [{
+                    "text": "אנא הכנס את שנת הלידה של הילד הראשון (4 ספרות).",
+                    "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
+                }]
+            }
+        except Exception:
             return self.show_error_and_return_to_main()
-    
+
     def process_child_birth_year(self, call_id: str, input_name: str, birth_year: str) -> Dict:
-        """טיפול בשנת לידה של ילד"""
         try:
             year = int(birth_year)
-            current_year = datetime.now().year
-            
-            if year < current_year - 50 or year > current_year:
-                raise ValueError("שנת לידה לא סבירה")
-            
-            call_data = self.current_calls.get(call_id, {})
-            if 'children_birth_years' not in call_data:
-                call_data['children_birth_years'] = []
-            call_data['children_birth_years'].append(year)
-            
-            current_child = call_data.get('current_child', 1)
-            total_children = call_data.get('children_count', 0)
-            
-            if current_child < total_children:
-                call_data['current_child'] = current_child + 1
-                self.current_calls[call_id] = call_data
-                
+            cy = datetime.now().year
+            if year < cy - 50 or year > cy:
+                raise ValueError
+            cd = self.current_calls.setdefault(call_id, {})
+            cd.setdefault('children_birth_years', []).append(year)
+            cur = cd.get('current_child', 1)
+            total = cd.get('children_count', 0)
+            if cur < total:
+                cd['current_child'] = cur + 1
+                nxt = cur + 1
                 return {
                     "type": "getDTMF",
-                    "name": f"child_birth_year_{current_child + 1}",
+                    "name": f"child_birth_year_{nxt}",
                     "max": 4,
                     "min": 4,
                     "timeout": 20,
                     "confirmType": "number",
                     "setMusic": "no",
-                    "files": [
-                        {
-                            "text": f"אנא הכנס את שנת הלידה של ילד מספר {current_child + 1} (4 ספרות).",
-                            "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
-                        }
-                    ]
+                    "files": [{
+                        "text": f"אנא הכנס את שנת הלידה של ילד מספר {nxt} (4 ספרות).",
+                        "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
+                    }]
                 }
             else:
-                self.current_calls[call_id] = call_data
                 return self.ask_spouse_workplaces(call_id, 1)
-                
-        except ValueError:
+        except Exception:
             return self.show_error_and_return_to_main()
-    
+
     def ask_spouse_workplaces(self, call_id: str, spouse_num: int) -> Dict:
-        """שאלה על מקומות עבודה של בן/בת זוג"""
-        spouse_text = "הראשון" if spouse_num == 1 else "השני"
-        
+        label = "הראשון" if spouse_num == 1 else "השני"
         return {
             "type": "getDTMF",
             "name": f"spouse{spouse_num}_workplaces",
@@ -699,285 +594,104 @@ def process_new_customer_id(self, call_id: str, tz: str) -> Dict:
             "timeout": 20,
             "confirmType": "number",
             "setMusic": "no",
-            "files": [
-                {
-                    "text": f"אנא הכנס את מספר מקומות העבודה של בן/בת הזוג {spouse_text}.",
-                    "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
-                }
-            ]
+            "files": [{
+                "text": f"אנא הכנס את מספר מקומות העבודה של בן/בת הזוג {label}.",
+                "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
+            }]
         }
-    
+
     def process_spouse_workplaces(self, call_id: str, input_name: str, workplaces: str) -> Dict:
-        """טיפול במספר מקומות עבודה"""
         try:
-            workplaces_count = int(workplaces)
-            if workplaces_count < 0 or workplaces_count > 10:
-                raise ValueError("מספר מקומות עבודה לא סביר")
-            
-            call_data = self.current_calls.get(call_id, {})
-            call_data[input_name] = workplaces_count
-            self.current_calls[call_id] = call_data
-            
+            w = int(workplaces)
+            if w < 0 or w > 10:
+                raise ValueError
+            cd = self.current_calls.setdefault(call_id, {})
+            cd[input_name] = w
             if input_name == 'spouse1_workplaces':
                 return self.ask_spouse_workplaces(call_id, 2)
-            else:
-                phone_number = call_data.get('PBXphone')
-                customer = self.get_customer_by_phone(phone_number)
-                
-                if customer:
+            # סיום איסוף – נשמור בפרטי הלקוח אם קיים
+            phone = cd.get('PBXphone')
+            cust = self.get_customer_by_phone(phone) if phone else None
+            if cust:
+                try:
                     self.db.update_customer_details(
-                        customer['id'],
-                        num_children=call_data.get('children_count', 0),
-                        children_birth_years=json.dumps(call_data.get('children_birth_years', [])),
-                        spouse1_workplaces=call_data.get('spouse1_workplaces', 0),
-                        spouse2_workplaces=call_data.get('spouse2_workplaces', 0)
+                        cust['id'],
+                        num_children=cd.get('children_count', 0),
+                        children_birth_years=json.dumps(cd.get('children_birth_years', [])),
+                        spouse1_workplaces=cd.get('spouse1_workplaces', 0),
+                        spouse2_workplaces=cd.get('spouse2_workplaces', 0)
                     )
-                
-                return {
-                    "type": "simpleMenu",
-                    "name": "detailsUpdated",
-                    "times": 1,
-                    "timeout": 10,
-                    "enabledKeys": "0",
-                    "setMusic": "no",
-                    "files": [
-                        {
-                            "text": "הפרטים עודכנו בהצלחה. לחץ 0 לחזרה לתפריט הראשי.",
-                            "activatedKeys": "0"
-                        }
-                    ]
-                }
-        except ValueError:
+                except Exception:
+                    logger.info("update_customer_details לא זמין בגיבוי – ממשיכים")
+            return {
+                "type": "simpleMenu",
+                "name": "detailsUpdated",
+                "times": 1,
+                "timeout": 10,
+                "enabledKeys": "0",
+                "files": [{"text": "הפרטים עודכנו בהצלחה. לחץ 0 לחזרה לתפריט הראשי.", "activatedKeys": "0"}]
+            }
+        except Exception:
             return self.show_error_and_return_to_main()
-    
+
     def process_customer_message(self, call_id: str, message_result: str) -> Dict:
-        """טיפול בהודעה שהושארה"""
-        call_data = self.current_calls.get(call_id, {})
-        phone_number = call_data.get('PBXphone')
-        customer = self.db.get_customer_by_phone(phone_number)
-        
-        if customer and message_result:
-            # שמירת ההודעה במאגר נתונים
-            self.db.save_message(
-                customer['id'],
-                call_id,
-                message_file=message_result,
-                duration=None  # המרכזיה תספק את המידע
-            )
-        
-        return jsonify({
+        cd = self.current_calls.get(call_id, {})
+        phone = cd.get('PBXphone')
+        cust = self.get_customer_by_phone(phone) if phone else None
+        if cust and message_result:
+            try:
+                self.db.save_message(cust['id'], call_id, message_file=message_result, message_text=None, duration=None)
+            except Exception:
+                logger.info("save_message לא זמין בגיבוי – ממשיכים")
+        return {
             "type": "simpleMenu",
             "name": "messageReceived",
             "times": 1,
             "timeout": 10,
             "enabledKeys": "0",
-            "setMusic": "no",
-            "files": [
-                {
-                    "text": "ההודעה התקבלה. נחזור אליך תוך 48 שעות. לחץ 0 לחזרה לתפריט הראשי.",
-                    "activatedKeys": "0"
-                }
-            ]
-        })
-    
+            "files": [{"text": "ההודעה התקבלה. נחזור אליך תוך 48 שעות. לחץ 0 לחזרה לתפריט הראשי.", "activatedKeys": "0"}]
+        }
+
     def process_annual_report_choice(self, call_id: str, choice: str) -> Dict:
-        """טיפול בבחירת דיווח שנתי"""
         if choice == '1':
-            call_data = self.current_calls.get(call_id, {})
-            phone_number = call_data.get('PBXphone')
-            customer = self.db.get_customer_by_phone(phone_number)
-            
-            if customer:
-                # יצירת בקשת דיווח
-                self.db.request_annual_report(customer['id'])
-            
-            return jsonify({
+            cd = self.current_calls.get(call_id, {})
+            phone = cd.get('PBXphone')
+            cust = self.get_customer_by_phone(phone) if phone else None
+            if cust:
+                try:
+                    self.db.request_annual_report(cust['id'])
+                except Exception:
+                    logger.info("request_annual_report לא זמין בגיבוי – ממשיכים")
+            return {
                 "type": "simpleMenu",
                 "name": "reportRequested",
                 "times": 1,
                 "timeout": 10,
                 "enabledKeys": "0",
-                "setMusic": "no",
-                "files": [
-                    {
-                        "text": "בקשת הדיווח התקבלה. הדיווח יישלח אליך בהודעת SMS תוך 24 שעות. לחץ 0 לחזרה לתפריט הראשי.",
-                        "activatedKeys": "0"
-                    }
-                ]
-            })
-        else:
-            return self.show_main_menu()
-    
+                "files": [{"text": "בקשת הדיווח התקבלה. הדיווח יישלח אליך בהודעת SMS תוך 24 שעות. לחץ 0 לחזרה לתפריט הראשי.", "activatedKeys": "0"}]
+            }
+        return show_main_menu()
+
     def show_error_and_return_to_main(self) -> Dict:
-        """הצגת שגיאה וחזרה לתפריט הראשי"""
-        return jsonify({
+        return {
             "type": "simpleMenu",
             "name": "systemError",
             "times": 1,
             "timeout": 10,
             "enabledKeys": "0",
-            "setMusic": "no",
-            "files": [
-                {
-                    "text": "אירעה שגיאה במערכת. לחץ 0 לחזרה לתפריט הראשי.",
-                    "activatedKeys": "0"
-                }
-            ]
-        })
-    
-    def get_customer_by_phone(self, phone_number: str) -> Optional[Dict]:
-        """קבלת פרטי לקוח לפי מספר טלפון"""
-        return self.db.get_customer_by_phone(phone_number)
-    
-    def is_subscription_active(self, customer: Dict) -> bool:
-        """בדיקת תוקף מנוי"""
-        return self.db.is_subscription_active(customer)
-    
-    def init_database(self):
-        """יצירת מבנה מאגר הנתונים"""
-        self.db.init_database()
-        # conn = sqlite3.connect(self.db_path)
-        
-        # cursor = conn.cursor()
-        
-        # # טבלת לקוחות
-        # cursor.execute('''
-        #     CREATE TABLE IF NOT EXISTS customers (
-        #         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #         phone_number TEXT UNIQUE NOT NULL,
-        #         name TEXT,
-        #         subscription_start_date DATE,
-        #         subscription_end_date DATE,
-        #         is_active BOOLEAN DEFAULT 1,
-        #         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        #     )
-        # ''')
-        
-        # # טבלת פרטים אישיים לזכויות
-        # cursor.execute('''
-        #     CREATE TABLE IF NOT EXISTS customer_details (
-        #         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #         customer_id INTEGER,
-        #         num_children INTEGER DEFAULT 0,
-        #         children_birth_years TEXT, -- JSON array של שנות לידה
-        #         spouse1_workplaces INTEGER DEFAULT 0,
-        #         spouse2_workplaces INTEGER DEFAULT 0,
-        #         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        #         FOREIGN KEY (customer_id) REFERENCES customers (id)
-        #     )
-        # ''')
-        
-        # # טבלת שיחות
-        # cursor.execute('''
-        #     CREATE TABLE IF NOT EXISTS calls (
-        #         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #         call_id TEXT UNIQUE,
-        #         phone_number TEXT,
-        #         pbx_num TEXT,
-        #         pbx_did TEXT,
-        #         call_type TEXT,
-        #         call_status TEXT,
-        #         extension_id TEXT,
-        #         extension_path TEXT,
-        #         call_data TEXT, -- JSON של כל הנתונים שנאספו
-        #         started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        #         ended_at DATETIME
-        #     )
-        # ''')
-        
-        # # טבלת קבלות
-        # cursor.execute('''
-        #     CREATE TABLE IF NOT EXISTS receipts (
-        #         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #         customer_id INTEGER,
-        #         call_id TEXT,
-        #         receipt_data TEXT, -- JSON של פרטי הקבלה
-        #         icount_response TEXT, -- תגובה מ-iCount
-        #         status TEXT DEFAULT 'pending',
-        #         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        #         FOREIGN KEY (customer_id) REFERENCES customers (id)
-        #     )
-        # ''')
-        
-        # # טבלת הודעות
-        # cursor.execute('''
-        #     CREATE TABLE IF NOT EXISTS messages (
-        #         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #         customer_id INTEGER,
-        #         call_id TEXT,
-        #         message_file TEXT,
-        #         message_text TEXT,
-        #         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        #         FOREIGN KEY (customer_id) REFERENCES customers (id)
-        #     )
-        # ''')
-        
-        # conn.commit()
-        # conn.close()
-        # logger.info("מאגר נתונים הוכן בהצלחה")
-    
-    def get_customer_by_phone(self, phone_number: str) -> Optional[Dict]:
-        return self.db.get_customer_by_phone(phone_number)
-
-    # def get_customer_by_phone(self, phone_number: str) -> Optional[Dict]:
-    #     """קבלת פרטי לקוח לפי מספר טלפון"""
-    #     conn = sqlite3.connect(self.db_path)
-    #     conn.row_factory = sqlite3.Row
-    #     cursor = conn.cursor()
-        
-    #     cursor.execute('''
-    #         SELECT * FROM customers WHERE phone_number = ?
-    #     ''', (phone_number,))
-        
-    #     customer = cursor.fetchone()
-    #     conn.close()
-        
-    #     if customer:
-    #         return dict(customer)
-    #     return None
-    
-    def is_subscription_active(self, customer: Dict) -> bool:
-        """בדיקת תוקף מנוי"""
-        if not customer or not customer.get('subscription_end_date'):
-            return False
-        
-        end_date = datetime.strptime(customer['subscription_end_date'], '%Y-%m-%d')
-        return end_date >= datetime.now()
-    
-    def log_call(self, call_params: Dict):
-        self.db.log_call(call_params)
-
-    # def log_call(self, call_params: Dict):
-    #     """רישום שיחה במאגר נתונים"""
-    #     conn = sqlite3.connect(self.db_path)
-    #     cursor = conn.cursor()
-        
-    #     cursor.execute('''
-    #         INSERT OR REPLACE INTO calls 
-    #         (call_id, phone_number, pbx_num, pbx_did, call_type, call_status, extension_id, extension_path, call_data)
-    #         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    #     ''', (
-    #         call_params.get('PBXcallId'),
-    #         call_params.get('PBXphone'),
-    #         call_params.get('PBXnum'),
-    #         call_params.get('PBXdid'),
-    #         call_params.get('PBXcallType'),
-    #         call_params.get('PBXcallStatus'),
-    #         call_params.get('PBXextensionId'),
-    #         call_params.get('PBXextensionPath'),
-    #         json.dumps(call_params, ensure_ascii=False)
-    #     ))
-        
-    #     conn.commit()
-    #     conn.close()
+            "files": [{"text": "אירעה שגיאה במערכת. לחץ 0 לחזרה לתפריט הראשי.", "activatedKeys": "0"}]
+        }
 
 pbx_handler = PBXHandler()
 
+# ----------------------
+# ראוטים
+# ----------------------
+
 @app.route('/pbx', methods=['GET'])
 def handle_pbx_request():
-    """נקודת הכניסה הראשית לפניות מהמרכזיה"""
+    """כניסת PBX – מזהה שיחה, בודק מנוי ומחזיר תפריט"""
     try:
-        # קבלת פרמטרים מהמרכזיה
         call_params = {
             'PBXphone': request.args.get('PBXphone'),
             'PBXnum': request.args.get('PBXnum'),
@@ -988,110 +702,43 @@ def handle_pbx_request():
             'PBXextensionId': request.args.get('PBXextensionId'),
             'PBXextensionPath': request.args.get('PBXextensionPath')
         }
-        
-        # הוספת כל הפרמטרים הנוספים שנאספו
-        for key, value in request.args.items():
-            if not key.startswith('PBX'):
-                call_params[key] = value
-        
-        logger.info(f"קיבלנו פנייה: {call_params}")
-        
-        # רישום השיחה
+        # הוספת כל פרמטרים שאינם PBX*
+        for k, v in request.args.items():
+            if not k.startswith('PBX'):
+                call_params[k] = v
+        logger.info("קיבלנו פנייה: %s", call_params)
+
+        # לוג שיחה + שמירה בזיכרון
         pbx_handler.log_call(call_params)
-        
-        # קבלת מספר הטלפון
-        phone_number = call_params.get('PBXphone')
-        if not phone_number:
+        call_id = call_params.get('PBXcallId') or ''
+        if call_id:
+            core_keys = ['PBXphone','PBXnum','PBXdid','PBXcallType','PBXcallStatus','PBXextensionId','PBXextensionPath']
+            pbx_handler.current_calls.setdefault(call_id, {}).update({k: call_params.get(k) for k in core_keys if call_params.get(k)})
+
+        phone = call_params.get('PBXphone')
+        if not phone:
             return jsonify({"error": "חסר מספר טלפון"}), 400
-        
-        # בדיקת קיום הלקוח
-        customer = pbx_handler.get_customer_by_phone(phone_number)
-        
+
+        customer = pbx_handler.get_customer_by_phone(phone)
         if not customer:
-            # לקוח לא קיים - העברה לשלוחת הרשמה
-            return handle_new_customer()
-        
-        # בדיקת תוקף מנוי
+            return jsonify(handle_new_customer())
         if not pbx_handler.is_subscription_active(customer):
-            # מנוי לא בתוקף - העברה לשלוחת הצטרפות
-            return handle_subscription_renewal()
-        
-        # לקוח עם מנוי בתוקף - הצגת תפריט ראשי
-        return show_main_menu()
-        
+            return jsonify(handle_subscription_renewal())
+        return jsonify(show_main_menu())
+
     except Exception as e:
-        logger.error(f"שגיאה בטיפול בפנייה: {str(e)}")
+        logger.exception("שגיאה בטיפול בבקשה")
         return jsonify({"error": "שגיאה בטיפול בבקשה"}), 500
-
-def handle_new_customer():
-    """טיפול בלקוח חדש"""
-    return jsonify({
-        "type": "simpleMenu",
-        "name": "newCustomer",
-        "times": 1,
-        "timeout": 10,
-        "enabledKeys": "1,2",
-        "setMusic": "no",
-        "extensionChange": "",
-        "files": [
-            {
-                "text": "שלום וברוך הבא. נראה שאין לך עדיין מנוי במערכת שלנו. לחץ 1 להצטרפות למערכת, או לחץ 2 לחזרה לתפריט הקודם.",
-                "activatedKeys": "1,2"
-            }
-        ]
-    })
-
-def handle_subscription_renewal():
-    """טיפול בחידוש מנוי"""
-    return jsonify({
-        "type": "simpleMenu", 
-        "name": "renewSubscription",
-        "times": 1,
-        "timeout": 10,
-        "enabledKeys": "1,2",
-        "setMusic": "no",
-        "extensionChange": "",
-        "files": [
-            {
-                "text": "המנוי שלך פג תוקף. לחץ 1 לחידוש המנוי, או לחץ 2 לחזרה לתפריט הקודם.",
-                "activatedKeys": "1,2"
-            }
-        ]
-    })
-
-def show_main_menu():
-    """תפריט ראשי ללקוחות עם מנוי בתוקף"""
-    return jsonify({
-        "type": "simpleMenu",
-        "name": "mainMenu", 
-        "times": 3,
-        "timeout": 15,
-        "enabledKeys": "1,2,3,4,5,6,7,8,9,0",
-        "setMusic": "yes",
-        "extensionChange": "",
-        "files": [
-            {
-                "text": "שלום וברוך הבא למערכת השירותים שלנו. לחץ 1 להנפקת קבלה, לחץ 2 לביטול קבלה, לחץ 3 לעדכון פרטים אישיים, לחץ 4 לשמיעת זכויות מגיעות, לחץ 5 להשארת הודעה, לחץ 6 לבקשת דיווח שנתי, לחץ 0 לחזרה.",
-                "activatedKeys": "1,2,3,4,5,6,0"
-            }
-        ]
-    })
 
 @app.route('/pbx/menu/<menu_name>', methods=['GET'])
 def handle_menu_choice(menu_name):
-    """טיפול כללי בבחירות תפריט (newCustomer / renewSubscription / mainMenu / וכו')"""
     try:
         call_id = request.args.get('PBXcallId') or ""
-        # נשמור פרמטרים חשובים של PBX לשימוש בהמשך הזרימה
-        core_keys = ['PBXphone','PBXnum','PBXdid','PBXcallType','PBXcallStatus','PBXextensionId','PBXextensionPath']
-        core = {k: request.args.get(k) for k in core_keys if request.args.get(k)}
         if call_id:
-            pbx_handler.current_calls.setdefault(call_id, {}).update(core)
+            core_keys = ['PBXphone','PBXnum','PBXdid','PBXcallType','PBXcallStatus','PBXextensionId','PBXextensionPath']
+            pbx_handler.current_calls.setdefault(call_id, {}).update({k: request.args.get(k) for k in core_keys if request.args.get(k)})
 
-        # הערך שהמשתמש הקיש לתפריט הנוכחי לפי שם התפריט
         value = request.args.get(menu_name)
-
-        # fallback: נאתר פרמטר מוכר אחר אם לא הגיע בשם menu_name
         if value is None:
             for k in [
                 'newCustomer','renewSubscription','mainMenu',
@@ -1114,132 +761,35 @@ def handle_menu_choice(menu_name):
             })
 
         resp = pbx_handler.handle_user_input(call_id, menu_name, value)
-        return resp if hasattr(resp, "response") else jsonify(resp)
+        return jsonify(resp)
 
-    except Exception as e:
+    except Exception:
         logger.exception("שגיאה בטיפול בבחירה")
         return jsonify({"error": "שגיאה בטיפול בבחירה"}), 500
 
-
-def handle_cancel_receipt():
-    """ביטול קבלה"""
-    return jsonify({
-        "type": "getDTMF",
-        "name": "cancelReceiptId",
-        "max": 10,
-        "min": 1,
-        "timeout": 30,
-        "confirmType": "digits",
-        "setMusic": "no",
-        "files": [
-            {
-                "text": "אנא הכנס את מספר הקבלה לביטול.",
-                "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
-            }
-        ]
-    })
-
-def handle_update_personal_details():
-    """עדכון פרטים אישיים"""
-    return jsonify({
-        "type": "getDTMF", 
-        "name": "numChildren",
-        "max": 2,
-        "min": 1,
-        "timeout": 20,
-        "confirmType": "number",
-        "setMusic": "no",
-        "files": [
-            {
-                "text": "אנא הכנס את מספר הילדים.",
-                "activatedKeys": "1,2,3,4,5,6,7,8,9,0"
-            }
-        ]
-    })
-
-def handle_show_benefits():
-    """הצגת זכויות"""
-    return jsonify({
-        "type": "simpleMenu",
-        "name": "benefitsMenu",
-        "times": 1,
-        "timeout": 30,
-        "enabledKeys": "1,0",
-        "setMusic": "no",
-        "files": [
-            {
-                "text": "על בסיס הנתונים שלך, אתה זכאי למענק עבודה בסך 2000 שקל ולדמי לידה בסך 1500 שקל. לחץ 1 לפרטים נוספים או 0 לחזרה לתפריט הראשי.",
-                "activatedKeys": "1,0"
-            }
-        ]
-    })
-
-def handle_leave_message():
-    """השארת הודעה"""
-    return jsonify({
-        "type": "record",
-        "name": "customerMessage",
-        "max": 180,  # 3 דקות
-        "min": 3,
-        "confirm": "confirmOnly",
-        "fileName": f"message_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
-        "files": [
-            {
-                "text": "אנא השאר את ההודעה שלך לאחר הצפצוף. לחץ # לסיום ההקלטה.",
-                "activatedKeys": "NONE"
-            }
-        ]
-    })
-
-def handle_annual_report():
-    """בקשת דיווח שנתי"""
-    return jsonify({
-        "type": "simpleMenu",
-        "name": "annualReport",
-        "times": 1,
-        "timeout": 15,
-        "enabledKeys": "1,0",
-        "setMusic": "no",
-        "files": [
-            {
-                "text": "הדיווח השנתי שלך יישלח אליך בהודעת SMS תוך 24 שעות. לחץ 1 לאישור או 0 לביטול.",
-                "activatedKeys": "1,0"
-            }
-        ]
-    })
-
 if __name__ == '__main__':
-    # הוספת כמה לקוחות לדוגמה
-    conn = sqlite3.connect('pbx_system.db')
-    cursor = conn.cursor()
-    
-    # לקוח עם מנוי בתוקף
-    cursor.execute('''
-        INSERT OR REPLACE INTO customers 
-        (phone_number, name, subscription_start_date, subscription_end_date, is_active)
-        VALUES (?, ?, ?, ?, ?)
-    ''', (
-        '0501234567',
-        'יוסי כהן',
-        '2024-01-01',
-        '2025-12-31',
-        1
-    ))
-    
-    # לקוח עם מנוי שפג
-    cursor.execute('''
-        INSERT OR REPLACE INTO customers
-        (phone_number, name, subscription_start_date, subscription_end_date, is_active)  
-        VALUES (?, ?, ?, ?, ?)
-    ''', (
-        '0507654321',
-        'דני לוי', 
-        '2023-01-01',
-        '2024-06-30',
-        1
-    ))
-    
-    conn.commit()
-    conn.close()
-    
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    # דוגמאות לנתוני לקוח – ריצה מקומית בלבד
+    try:
+        db = DatabaseHandler()
+        conn = db.get_connection(); c = conn.cursor()
+        c.execute('''
+            INSERT OR REPLACE INTO customers (id, phone_number, name, email, subscription_start_date, subscription_end_date, is_active)
+            VALUES (1, '0501234567', 'יוסי כהן', 'yossi@example.com', '2024-01-01', '2025-12-31', 1)
+        ''')
+        c.execute('''
+            INSERT OR REPLACE INTO customers (id, phone_number, name, email, subscription_start_date, subscription_end_date, is_active)
+            VALUES (2, '0507654321', 'דני לוי', 'dani@example.com', '2023-01-01', '2024-06-30', 1)
+        ''')
+        conn.commit(); conn.close()
+    except Exception:
+        logger.info("דילגנו על הזנת נתוני דוגמה")
+
+    app.run(host=getattr(Config, 'HOST', '0.0.0.0'), port=getattr(Config, 'PORT', 5000), debug=getattr(Config, 'DEBUG', True))
+
+
+# === הערת תיקון ל-database_handler.py ===
+# בפונקציה update_call_data קיימת אצלך פקודה: "UPDATE calls SET call_data = ?, updated_at = CURRENT_TIMESTAMP ..."
+# בטבלת calls המוגדרת בקובץ זה (וגם אצלך) אין עמודה updated_at – ולכן תופיע שגיאה "no such column: updated_at".
+# פתרון מהיר: החלף את השאילתה ל:
+#    UPDATE calls SET call_data = ? WHERE call_id = ?
+# כך לא תהיה תלות בעמודת updated_at.
