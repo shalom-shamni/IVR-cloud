@@ -336,32 +336,35 @@ class DatabaseHandler:
         
         return call_row_id
     
-    def update_call_data(self, call_id: str, new_data: Dict) -> bool:
-        """עדכון נתוני שיחה"""
+    def update_call_data(self, call_id: str, new_data: dict) -> bool:
         conn = self.get_connection()
-        cursor = conn.cursor()
-        
-        # קבלת הנתונים הקיימים
-        cursor.execute('SELECT call_data FROM calls WHERE call_id = ?', (call_id,))
-        result = cursor.fetchone()
-        
-        if result:
-            existing_data = json.loads(result['call_data'] or '{}')
-            existing_data.update(new_data)
-            
-            cursor.execute('''
-                UPDATE calls SET call_data = ? WHERE call_id = ? 
-                WHERE call_id = ?
-            ''', (json.dumps(existing_data, ensure_ascii=False), call_id))
-            
-            success = cursor.rowcount > 0
-        else:
-            success = False
-        
+        c = conn.cursor()
+    
+        c.execute('SELECT call_data FROM calls WHERE call_id = ?', (call_id,))
+        row = c.fetchone()
+        if not row:
+            conn.close()
+            return False
+    
+        # הגנה במקרה שהתוכן אינו JSON תקין
+        try:
+            existing = json.loads(row['call_data'] or '{}')
+        except Exception:
+            existing = {}
+    
+        existing.update(new_data)
+    
+        # שים לב: WHERE מופיע פעם אחת בלבד, ושני מצייני שאלה סה״כ
+        c.execute(
+            'UPDATE calls SET call_data = ? WHERE call_id = ?',
+            (json.dumps(existing, ensure_ascii=False), call_id)
+        )
+    
         conn.commit()
+        ok = c.rowcount > 0
         conn.close()
-        
-        return success
+        return ok
+
     
     # פונקציות קבלות
     def create_receipt(self, customer_id: int, call_id: str, receipt_data: Dict) -> int:
