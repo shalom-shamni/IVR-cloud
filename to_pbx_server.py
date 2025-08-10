@@ -715,14 +715,44 @@ def handle_pbx_request():
             core_keys = ['PBXphone','PBXnum','PBXdid','PBXcallType','PBXcallStatus','PBXextensionId','PBXextensionPath']
             pbx_handler.current_calls.setdefault(call_id, {}).update({k: call_params.get(k) for k in core_keys if call_params.get(k)})
 
-        # תמיכה ב-postback לאותו מסלול (/pbx) כשהמרכזיה שולחת בחירה
-        for k in [
-            'newCustomer','renewSubscription','mainMenu','receiptAmount','receiptDescription','cancelReceiptId',
-            'numChildren','spouse1_workplaces','spouse2_workplaces','annualReport','customerMessage','newCustomerID'
-        ] + [x for x in request.args.keys() if x.startswith('child_birth_year_')]:
-            if k in request.args:
-                resp = pbx_handler.handle_user_input(call_id, k, request.args.get(k))
+        # --- בתוך handle_pbx_request, אחרי עדכון current_calls ---
+        
+        # אסוף את כל הפרמטרים שנשלחו
+        args = request.args
+        
+        # רשימת עדיפויות (גבוה→נמוך). מפתח שלא קיים פשוט ידולג.
+        PRIORITY = [
+            # שלבי הזנה ספציפיים/מתקדמים
+            # דינמי: child_birth_year_N (נטפל בהם מיד)
+            'receiptDescription',
+            'receiptAmount',
+            'cancelReceiptId',
+            'newCustomerID',
+            'numChildren',
+            'spouse2_workplaces',
+            'spouse1_workplaces',
+            'annualReport',
+            'customerMessage',
+            # תפריטים כלליים בסוף
+            'mainMenu',
+            'renewSubscription',
+            'newCustomer',
+        ]
+        
+        # קודם—בדיקה לדינמי: child_birth_year_*
+        for k in args.keys():
+            if k.startswith('child_birth_year_') and args.get(k):
+                resp = pbx_handler.handle_user_input(call_id, k, args.get(k))
                 return jsonify(resp)
+        
+        # אחר כך—לפי עדיפויות קשיחה
+        for k in PRIORITY:
+            if k in args and args.get(k) not in (None, ''):
+                resp = pbx_handler.handle_user_input(call_id, k, args.get(k))
+                return jsonify(resp)
+        
+        # אם אין בחירה—הזרימה הרגילה של כניסת שיחה
+
 
         phone = call_params.get('PBXphone')
         if not phone:
