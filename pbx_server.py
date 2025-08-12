@@ -11,140 +11,140 @@ from typing import Dict, Any, Optional
 
 # == ייבואים פנימיים ==
 # חשוב: ודאו שיש לכם קובץ בשם config.py (ולא config_py.py)
-try:
-    from database_handler import DatabaseHandler
-    from config import Config
-except Exception as e:  # גיבוי רזה, למקרה שחסר config.py מקומי
-    logging.basicConfig(level=logging.INFO)
-    logging.warning("נפל ל-Config/DB גיבוי: ודאו שקיים config.py וש-yDATABASE_HANDLER זמין. שגיאה: %s", e)
+# try:
+#     from database_handler import DatabaseHandler
+#     from config import Config
+# except Exception as e:  # גיבוי רזה, למקרה שחסר config.py מקומי
+#     logging.basicConfig(level=logging.INFO)
+#     logging.warning("נפל ל-Config/DB גיבוי: ודאו שקיים config.py וש-yDATABASE_HANDLER זמין. שגיאה: %s", e)
 
-    class Config:
-        HOST = "0.0.0.0"
-        PORT = 5000
-        DEBUG = True
-        LOG_LEVEL = "INFO"
-        LOG_FILE = "pbx_system.log"
-        DATABASE_PATH = "pbx_system.db"
+class Config:
+    HOST = "0.0.0.0"
+    PORT = 5000
+    DEBUG = True
+    LOG_LEVEL = "INFO"
+    LOG_FILE = "pbx_system.log"
+    DATABASE_PATH = "pbx_system.db"
 
-    class DatabaseHandler:
-        def __init__(self, db_path: str = None):
-            self.db_path = db_path or Config.DATABASE_PATH
-            self.init_database()
-        def get_connection(self):
-            conn = sqlite3.connect(self.db_path)
-            conn.row_factory = sqlite3.Row
-            return conn
-        def init_database(self):
-            conn = self.get_connection()
-            c = conn.cursor()
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS customers (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    phone_number TEXT UNIQUE NOT NULL,
-                    name TEXT,
-                    email TEXT,
-                    subscription_start_date DATE,
-                    subscription_end_date DATE,
-                    is_active BOOLEAN DEFAULT 1,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS calls (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    call_id TEXT UNIQUE NOT NULL,
-                    phone_number TEXT,
-                    pbx_num TEXT,
-                    pbx_did TEXT,
-                    call_type TEXT,
-                    call_status TEXT,
-                    extension_id TEXT,
-                    extension_path TEXT,
-                    call_data TEXT,
-                    started_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            conn.commit(); conn.close()
-        def get_customer_by_phone(self, phone_number: str) -> Optional[Dict]:
-            conn = self.get_connection(); c = conn.cursor()
-            c.execute('SELECT * FROM customers WHERE phone_number = ?', (phone_number,))
-            row = c.fetchone(); conn.close()
-            return dict(row) if row else None
-        def is_subscription_active(self, customer: Dict) -> bool:
-            if not customer or not customer.get('subscription_end_date'):
-                return False
-            end_date = datetime.strptime(customer['subscription_end_date'], '%Y-%m-%d').date()
-            return end_date >= datetime.now().date()
-        def log_call(self, call_params: Dict) -> int:
-            conn = self.get_connection(); c = conn.cursor()
-            c.execute('''
-                INSERT OR REPLACE INTO calls
-                (call_id, phone_number, pbx_num, pbx_did, call_type, call_status, extension_id, extension_path, call_data)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                call_params.get('PBXcallId'), call_params.get('PBXphone'), call_params.get('PBXnum'),
-                call_params.get('PBXdid'), call_params.get('PBXcallType'), call_params.get('PBXcallStatus'),
-                call_params.get('PBXextensionId'), call_params.get('PBXextensionPath'), json.dumps(call_params, ensure_ascii=False)
-            ))
-            conn.commit(); rid = c.lastrowid; conn.close(); return rid
-        def update_call_data(self, call_id: str, new_data: Dict) -> bool:
-            conn = self.get_connection(); c = conn.cursor()
-            c.execute('SELECT call_data FROM calls WHERE call_id = ?', (call_id,))
-            row = c.fetchone();
-            if not row:
-                conn.close(); return False
-            existing = json.loads(row['call_data'] or '{}'); existing.update(new_data)
-            c.execute('UPDATE calls SET call_data = ? WHERE call_id = ?', (json.dumps(existing, ensure_ascii=False), call_id))
-            ok = c.rowcount > 0; conn.commit(); conn.close(); return ok
-        def create_customer(self, phone_number: str, name: str = None, email: str = None, 
-                           subscription_start_date: str = None, subscription_end_date: str = None) -> int:
-            """יצירת לקוח חדש"""
-            conn = self.get_connection()
-            c = conn.cursor()
-            
-            # אם לא ניתן תאריך התחלה, נתחיל מהיום
-            if not subscription_start_date:
-                subscription_start_date = datetime.now().strftime('%Y-%m-%d')
-            
-            # אם לא ניתן תאריך סיום, נוסיף שנה מהיום
-            if not subscription_end_date:
-                end_date = datetime.now() + timedelta(days=365)
-                subscription_end_date = end_date.strftime('%Y-%m-%d')
-            
-            c.execute('''
-                INSERT INTO customers (phone_number, name, email, subscription_start_date, subscription_end_date, is_active)
-                VALUES (?, ?, ?, ?, ?, 1)
-            ''', (phone_number, name, email, subscription_start_date, subscription_end_date))
-            
-            conn.commit()
-            customer_id = c.lastrowid
-            conn.close()
-            return customer_id
-        def create_receipt(self, customer_id: int, call_id: str, receipt_data: Dict) -> int:
-            return 1
-        def update_receipt(self, receipt_id: int, **kwargs) -> bool:
-            return True
-        def get_customer_details(self, customer_id: int) -> Optional[Dict]:
-            return None
-        def update_customer_details(self, customer_id: int, **kwargs) -> bool:
-            return True
+class DatabaseHandler:
+    def __init__(self, db_path: str = None):
+        self.db_path = db_path or Config.DATABASE_PATH
+        self.init_database()
+    def get_connection(self):
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
+    def init_database(self):
+        conn = self.get_connection()
+        c = conn.cursor()
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS customers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone_number TEXT UNIQUE NOT NULL,
+                name TEXT,
+                email TEXT,
+                subscription_start_date DATE,
+                subscription_end_date DATE,
+                is_active BOOLEAN DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                call_id TEXT UNIQUE NOT NULL,
+                phone_number TEXT,
+                pbx_num TEXT,
+                pbx_did TEXT,
+                call_type TEXT,
+                call_status TEXT,
+                extension_id TEXT,
+                extension_path TEXT,
+                call_data TEXT,
+                started_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit(); conn.close()
+    def get_customer_by_phone(self, phone_number: str) -> Optional[Dict]:
+        conn = self.get_connection(); c = conn.cursor()
+        c.execute('SELECT * FROM customers WHERE phone_number = ?', (phone_number,))
+        row = c.fetchone(); conn.close()
+        return dict(row) if row else None
+    def is_subscription_active(self, customer: Dict) -> bool:
+        if not customer or not customer.get('subscription_end_date'):
+            return False
+        end_date = datetime.strptime(customer['subscription_end_date'], '%Y-%m-%d').date()
+        return end_date >= datetime.now().date()
+    def log_call(self, call_params: Dict) -> int:
+        conn = self.get_connection(); c = conn.cursor()
+        c.execute('''
+            INSERT OR REPLACE INTO calls
+            (call_id, phone_number, pbx_num, pbx_did, call_type, call_status, extension_id, extension_path, call_data)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            call_params.get('PBXcallId'), call_params.get('PBXphone'), call_params.get('PBXnum'),
+            call_params.get('PBXdid'), call_params.get('PBXcallType'), call_params.get('PBXcallStatus'),
+            call_params.get('PBXextensionId'), call_params.get('PBXextensionPath'), json.dumps(call_params, ensure_ascii=False)
+        ))
+        conn.commit(); rid = c.lastrowid; conn.close(); return rid
+    def update_call_data(self, call_id: str, new_data: Dict) -> bool:
+        conn = self.get_connection(); c = conn.cursor()
+        c.execute('SELECT call_data FROM calls WHERE call_id = ?', (call_id,))
+        row = c.fetchone();
+        if not row:
+            conn.close(); return False
+        existing = json.loads(row['call_data'] or '{}'); existing.update(new_data)
+        c.execute('UPDATE calls SET call_data = ? WHERE call_id = ?', (json.dumps(existing, ensure_ascii=False), call_id))
+        ok = c.rowcount > 0; conn.commit(); conn.close(); return ok
+    def create_customer(self, phone_number: str, name: str = None, email: str = None, 
+                       subscription_start_date: str = None, subscription_end_date: str = None) -> int:
+        """יצירת לקוח חדש"""
+        conn = self.get_connection()
+        c = conn.cursor()
+        
+        # אם לא ניתן תאריך התחלה, נתחיל מהיום
+        if not subscription_start_date:
+            subscription_start_date = datetime.now().strftime('%Y-%m-%d')
+        
+        # אם לא ניתן תאריך סיום, נוסיף שנה מהיום
+        if not subscription_end_date:
+            end_date = datetime.now() + timedelta(days=365)
+            subscription_end_date = end_date.strftime('%Y-%m-%d')
+        
+        c.execute('''
+            INSERT INTO customers (phone_number, name, email, subscription_start_date, subscription_end_date, is_active)
+            VALUES (?, ?, ?, ?, ?, 1)
+        ''', (phone_number, name, email, subscription_start_date, subscription_end_date))
+        
+        conn.commit()
+        customer_id = c.lastrowid
+        conn.close()
+        return customer_id
+    def create_receipt(self, customer_id: int, call_id: str, receipt_data: Dict) -> int:
+        return 1
+    def update_receipt(self, receipt_id: int, **kwargs) -> bool:
+        return True
+    def get_customer_details(self, customer_id: int) -> Optional[Dict]:
+        return None
+    def update_customer_details(self, customer_id: int, **kwargs) -> bool:
+        return True
 
 # iCount – גיבוי לדמה אם אין מודול חיצוני
-try:
-    from icount_handler import ICountHandler, BenefitsCalculator
-except Exception:
-    class ICountHandler:
-        def create_receipt(self, receipt_data: Dict) -> Dict:
-            return {
-                'status': True,
-                'doc_id': f"DOC{datetime.now().strftime('%Y%m%d%H%M%S')}",
-                'doc_num': f"R{datetime.now().strftime('%y%m')}-{datetime.now().strftime('%d%H%M')}",
-                'message': 'קבלה נוצרה בהצלחה'
-            }
-    class BenefitsCalculator:
-        @staticmethod
-        def calculate_total_benefits(customer_details: Dict) -> Dict:
-            return {'work_benefit': 2000, 'birth_benefit': 1500, 'total_benefit': 3500}
+# try:
+#     from icount_handler import ICountHandler, BenefitsCalculator
+# except Exception:
+class ICountHandler:
+    def create_receipt(self, receipt_data: Dict) -> Dict:
+        return {
+            'status': True,
+            'doc_id': f"DOC{datetime.now().strftime('%Y%m%d%H%M%S')}",
+            'doc_num': f"R{datetime.now().strftime('%y%m')}-{datetime.now().strftime('%d%H%M')}",
+            'message': 'קבלה נוצרה בהצלחה'
+        }
+class BenefitsCalculator:
+    @staticmethod
+    def calculate_total_benefits(customer_details: Dict) -> Dict:
+        return {'work_benefit': 2000, 'birth_benefit': 1500, 'total_benefit': 3500}
 
 # == לוגים ==
 logging.basicConfig(
