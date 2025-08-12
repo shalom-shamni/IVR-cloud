@@ -212,7 +212,7 @@ def handle_create_receipt() -> Dict:
         "max": 6,
         "min": 1,
         "timeout": 30,
-        "confirmType": "digits",
+        "confirmType": "number",
         "setMusic": "no",
         "files": [{
             "text": "אנא הקש סכום בקבלה (בשקלים).",
@@ -506,7 +506,7 @@ class PBXHandler:
                 "confirmType": "digits",
                 "setMusic": "no",
                 "files": [{
-                    "text": f"הסכום שהוכנס הוא {amount_int} שקל. אנא הכנס קוד תיאור או לחץ # לדילוג.",
+                    "text": f"הסכום שהוכנס הוא {amount_int} שקל. אנא הכנס קוד תיאור או לחץ סולמית לדילוג.",
                     "activatedKeys": "1,2,3,4,5,6,7,8,9,0,#"
                 }]
             }
@@ -875,20 +875,20 @@ def handle_menu_choice(menu_name):
         return jsonify({"error": "שגיאה בטיפול בבחירה"}), 500
 
 if __name__ == '__main__':
-    # דוגמאות לנתוני לקוח – ריצה מקומית בלבד
-    try:
-        db = DatabaseHandler()
-        conn = db.get_connection(); c = conn.cursor()
-        c.execute('''
-            INSERT OR REPLACE INTO customers (id, phone_number, name, email, subscription_start_date, subscription_end_date, is_active)
-            VALUES (1, '0501234567', 'יוסי כהן', 'yossi@example.com', '2024-01-01', '2025-12-31', 1)
-        ''')
-        c.execute('''
-            INSERT OR REPLACE INTO customers (id, phone_number, name, email, subscription_start_date, subscription_end_date, is_active)
-            VALUES (2, '0507654321', 'דני לוי', 'dani@example.com', '2023-01-01', '2024-06-30', 1)
-        ''')
-        conn.commit(); conn.close()
-    except Exception:
-        logger.info("דילגנו על הזנת נתוני דוגמה")
+    # # דוגמאות לנתוני לקוח – ריצה מקומית בלבד
+    # try:
+    #     db = DatabaseHandler()
+    #     conn = db.get_connection(); c = conn.cursor()
+    #     c.execute('''
+    #         INSERT OR REPLACE INTO customers (id, phone_number, name, email, subscription_start_date, subscription_end_date, is_active)
+    #         VALUES (1, '0501234567', 'יוסי כהן', 'yossi@example.com', '2024-01-01', '2025-12-31', 1)
+    #     ''')
+    #     c.execute('''
+    #         INSERT OR REPLACE INTO customers (id, phone_number, name, email, subscription_start_date, subscription_end_date, is_active)
+    #         VALUES (2, '0507654321', 'דני לוי', 'dani@example.com', '2023-01-01', '2024-06-30', 1)
+    #     ''')
+    #     conn.commit(); conn.close()
+    # except Exception:
+    #     logger.info("דילגנו על הזנת נתוני דוגמה")
 
     app.run(host=getattr(Config, 'HOST', '0.0.0.0'), port=getattr(Config, 'PORT', 5000), debug=getattr(Config, 'DEBUG', True))
